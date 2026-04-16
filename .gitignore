@@ -1,0 +1,7 @@
+.DS_Store
+.build/
+.swiftpm/
+状态切换工具.app/
+data/
+preview-assets/
+archive/
