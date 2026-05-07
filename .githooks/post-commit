@@ -1,0 +1,16 @@
+#!/bin/zsh
+set -euo pipefail
+
+if [[ "${SKIP_DEV_LOG_HOOK:-0}" == "1" ]]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+"$repo_root/scripts/update_dev_log.sh"
+
+if git diff --quiet -- "$repo_root/docs/开发日志.md"; then
+  exit 0
+fi
+
+git add "$repo_root/docs/开发日志.md"
+SKIP_DEV_LOG_HOOK=1 git commit --amend --no-edit --no-verify >/dev/null

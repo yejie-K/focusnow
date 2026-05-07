@@ -111,6 +111,8 @@ struct PopoverContentView: View {
                 )
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .zIndex(20)
     }
 
     private var topStageView: some View {
@@ -351,7 +353,7 @@ struct PopoverContentView: View {
             } else {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(timelineRecords.reversed())) { record in
-                        Text("\(Self.timelineLabel(for: record, scope: historyScope)) - \(record.currentState)")
+                        Text("\(Self.timelineLabel(for: record, scope: historyScope)) - \(record.displayState)")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(theme.text)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -432,7 +434,7 @@ struct PopoverContentView: View {
 
     private var activeStateDisplay: (label: String, colorHex: String?) {
         if let state = store.currentStateDefinition {
-            return (state.label, state.colorHex)
+            return (store.currentStateDisplayLabel ?? state.label, state.colorHex)
         }
         if let label = store.currentStateLabel {
             return (label, nil)

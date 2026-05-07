@@ -24,8 +24,18 @@ struct RecordEvent: Codable, Identifiable, Hashable {
     var previousStateCode: String?
     var currentState: String
     let stateCode: String
+    var appName: String? = nil
+    var appBundleIdentifier: String? = nil
     let source: String
+    var sourceDetail: String? = nil
     let createdAt: String
+
+    var displayState: String {
+        guard let appName, !appName.isEmpty else {
+            return currentState
+        }
+        return "\(currentState) - \(appName)"
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -35,7 +45,10 @@ struct RecordEvent: Codable, Identifiable, Hashable {
         case previousStateCode = "previous_state_code"
         case currentState = "current_state"
         case stateCode = "state_code"
+        case appName = "app_name"
+        case appBundleIdentifier = "app_bundle_id"
         case source
+        case sourceDetail = "source_detail"
         case createdAt = "created_at"
     }
 }

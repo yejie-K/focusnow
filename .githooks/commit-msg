@@ -1,0 +1,28 @@
+#!/bin/zsh
+set -euo pipefail
+
+message_file="$1"
+first_line="$(sed -n '1p' "$message_file" | tr -d '\r')"
+
+if [[ -z "$first_line" ]]; then
+  echo "提交信息不能为空"
+  exit 1
+fi
+
+if [[ "$first_line" =~ ^(Merge|Revert) ]]; then
+  exit 0
+fi
+
+pattern='^(feat|fix|refactor|docs|style|test|chore|release)(\([[:alnum:]_./-]+\))?: .+'
+
+if [[ ! "$first_line" =~ $pattern ]]; then
+  cat <<'EOF'
+提交信息格式不对。
+
+请用这种格式：
+feat: 新增超时提醒
+fix: 修复设置页打不开
+docs: 更新开发手册
+EOF
+  exit 1
+fi

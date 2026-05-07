@@ -231,4 +231,227 @@ final class RecordStoreTests: XCTestCase {
         XCTAssertEqual(store.records.count, 1)
         XCTAssertEqual(store.records.first?.id, keptRecordID)
     }
+
+
+    @MainActor
+    func testReminderSettingsPersist() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        store.setReminderSnoozeMinutes(15)
+        store.setReminderThreshold(for: "focus_work", minutes: 75)
+
+        let reloaded = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        XCTAssertEqual(reloaded.automationSettings.reminder.snoozeMinutes, 15)
+        XCTAssertEqual(reloaded.reminderRule(for: "focus_work").thresholdMinutes, 75)
+    }
+
+    @MainActor
+    func testReminderFiresOnceAndRespectsSnooze() throws {
+        let now = Date()
+        let startedAt = now.addingTimeInterval(-4_200)
+        try seedRecord(stateCode: "focus_work", currentState: "深度工作", recordedAt: startedAt)
+        try seedAutomationSettings(
+            AutomationSettings(
+                reminder: ReminderSettings(
+                    isEnabled: true,
+                    snoozeMinutes: 10,
+                    rules: [
+                        StateReminderRule(stateCode: "focus_work", isEnabled: true, thresholdMinutes: 60),
+                        StateReminderRule(stateCode: "meeting", isEnabled: false, thresholdMinutes: 50),
+                        StateReminderRule(stateCode: "study", isEnabled: false, thresholdMinutes: 50),
+                        StateReminderRule(stateCode: "rest", isEnabled: false, thresholdMinutes: 30),
+                        StateReminderRule(stateCode: "interrupt", isEnabled: false, thresholdMinutes: 45),
+                        StateReminderRule(stateCode: "other", isEnabled: false, thresholdMinutes: 60),
+                    ]
+                )
+            )
+        )
+
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        let first = try XCTUnwrap(store.evaluateReminderIfNeeded(now: now))
+        XCTAssertEqual(first.stateCode, "focus_work")
+        XCTAssertNil(store.evaluateReminderIfNeeded(now: now.addingTimeInterval(60)))
+
+        store.snoozeReminder(segmentKey: first.segmentKey, now: now)
+
+        XCTAssertNil(store.evaluateReminderIfNeeded(now: now.addingTimeInterval(5 * 60)))
+        let second = try XCTUnwrap(store.evaluateReminderIfNeeded(now: now.addingTimeInterval(10 * 60)))
+        XCTAssertEqual(second.segmentKey, first.segmentKey)
+    }
+
+    @MainActor
+    func testReminderActionCanSwitchToRest() throws {
+        let now = Date()
+        let startedAt = now.addingTimeInterval(-4_200)
+        try seedRecord(stateCode: "focus_work", currentState: "深度工作", recordedAt: startedAt)
+        try seedAutomationSettings(
+            AutomationSettings(
+                reminder: ReminderSettings(
+                    isEnabled: true,
+                    snoozeMinutes: 10,
+                    rules: [
+                        StateReminderRule(stateCode: "focus_work", isEnabled: true, thresholdMinutes: 60),
+                        StateReminderRule(stateCode: "meeting", isEnabled: false, thresholdMinutes: 50),
+                        StateReminderRule(stateCode: "study", isEnabled: false, thresholdMinutes: 50),
+                        StateReminderRule(stateCode: "rest", isEnabled: false, thresholdMinutes: 30),
+                        StateReminderRule(stateCode: "interrupt", isEnabled: false, thresholdMinutes: 45),
+                        StateReminderRule(stateCode: "other", isEnabled: false, thresholdMinutes: 60),
+                    ]
+                )
+            )
+        )
+
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+        let trigger = try XCTUnwrap(store.evaluateReminderIfNeeded(now: now))
+
+        store.switchToRestFromReminder(segmentKey: trigger.segmentKey, now: now)
+
+        XCTAssertEqual(store.currentStateCode, "rest")
+        XCTAssertEqual(store.records.last?.source, "reminder_action")
+        XCTAssertEqual(store.records.last?.previousStateCode, "focus_work")
+    }
+
+    @MainActor
+    func testAutoSwitchRecordsAfterAppRuleSettles() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+        let now = Date()
+
+        store.setAutoSwitchEnabled(true)
+        store.setAutoSwitchSettleSeconds(10)
+        store.setAutoSwitchAppBindingText(for: "focus_work", text: "Codex、com.openai.codex")
+        store.setAutoSwitchRuleEnabled(for: "focus_work", enabled: true)
+
+        store.observeFrontmostApplication(
+            localizedName: "Codex",
+            bundleIdentifier: "com.openai.codex",
+            now: now
+        )
+
+        XCTAssertEqual(store.autoSwitchCandidate?.stateCode, "focus_work")
+        XCTAssertNil(store.evaluateAutoSwitch(now: now.addingTimeInterval(9)))
+
+        let result = try XCTUnwrap(store.evaluateAutoSwitch(now: now.addingTimeInterval(10)))
+
+        XCTAssertEqual(result.stateCode, "focus_work")
+        XCTAssertEqual(result.appName, "Codex")
+        XCTAssertEqual(store.currentStateCode, "focus_work")
+        XCTAssertEqual(store.records.last?.source, "auto_app_rule")
+        XCTAssertEqual(store.records.last?.appName, "Codex")
+        XCTAssertEqual(store.records.last?.appBundleIdentifier, "com.openai.codex")
+        XCTAssertEqual(store.records.last?.displayState, "深度工作 - Codex")
+        XCTAssertTrue(store.records.last?.sourceDetail?.contains("Codex") == true)
+    }
+
+    @MainActor
+    func testAutoSwitchRecordsDifferentAppUnderSameState() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+        let now = Date()
+
+        store.setAutoSwitchEnabled(true)
+        store.setAutoSwitchSettleSeconds(10)
+        store.setAutoSwitchAppBindingText(for: "meeting", text: "飞书、微信")
+        store.setAutoSwitchRuleEnabled(for: "meeting", enabled: true)
+
+        store.observeFrontmostApplication(
+            localizedName: "飞书",
+            bundleIdentifier: "com.bytedance.macos.feishu",
+            now: now
+        )
+        _ = store.evaluateAutoSwitch(now: now.addingTimeInterval(10))
+
+        store.observeFrontmostApplication(
+            localizedName: "微信",
+            bundleIdentifier: "com.tencent.xinWeChat",
+            now: now.addingTimeInterval(20)
+        )
+        _ = store.evaluateAutoSwitch(now: now.addingTimeInterval(30))
+
+        XCTAssertEqual(store.records.count, 2)
+        XCTAssertEqual(store.records.map(\.displayState), ["沟通协作 - 飞书", "沟通协作 - 微信"])
+        XCTAssertEqual(store.records.last?.previousStateCode, "meeting")
+    }
+
+    @MainActor
+    func testManualRecordCooldownBlocksAutoSwitch() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        store.setAutoSwitchEnabled(true)
+        store.setAutoSwitchSettleSeconds(10)
+        store.setAutoSwitchAppBindingText(for: "focus_work", text: "Codex")
+        store.setAutoSwitchRuleEnabled(for: "focus_work", enabled: true)
+
+        store.armRecord()
+        store.commit(state: store.states.first { $0.code == "rest" } ?? store.states[0])
+
+        let now = Date()
+        store.observeFrontmostApplication(
+            localizedName: "Codex",
+            bundleIdentifier: "com.openai.codex",
+            now: now
+        )
+
+        XCTAssertNil(store.autoSwitchCandidate)
+        XCTAssertNil(store.evaluateAutoSwitch(now: now.addingTimeInterval(20)))
+        XCTAssertEqual(store.currentStateCode, "rest")
+    }
+
+    @MainActor
+    func testAutoSwitchVisualBindingMovesAppBetweenStates() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        store.bindAutoSwitchAppIdentifier("com.openai.codex", to: "focus_work")
+        store.bindAutoSwitchAppIdentifier("com.openai.codex", to: "meeting")
+
+        XCTAssertFalse(store.boundAutoSwitchAppIdentifiers(for: "focus_work").contains("com.openai.codex"))
+        XCTAssertTrue(store.boundAutoSwitchAppIdentifiers(for: "meeting").contains("com.openai.codex"))
+        XCTAssertTrue(store.autoSwitchRule(for: "meeting").isEnabled)
+
+        store.unbindAutoSwitchAppIdentifier("com.openai.codex", from: "meeting")
+
+        XCTAssertFalse(store.boundAutoSwitchAppIdentifiers(for: "meeting").contains("com.openai.codex"))
+    }
+
+    @MainActor
+    private func seedRecord(stateCode: String, currentState: String, recordedAt: Date) throws {
+        _ = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        let dataDirectoryURL = temporaryDirectoryURL.appendingPathComponent("data", isDirectory: true)
+        let recordsURL = dataDirectoryURL.appendingPathComponent("records.json")
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        isoFormatter.timeZone = .current
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.timeZone = .current
+
+        let record = RecordEvent(
+            id: "evt_seed",
+            recordedAt: isoFormatter.string(from: recordedAt),
+            date: dateFormatter.string(from: recordedAt),
+            previousState: nil,
+            previousStateCode: nil,
+            currentState: currentState,
+            stateCode: stateCode,
+            source: "manual_click",
+            createdAt: isoFormatter.string(from: recordedAt)
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode([record]).write(to: recordsURL, options: .atomic)
+    }
+
+    @MainActor
+    private func seedAutomationSettings(_ settings: AutomationSettings) throws {
+        _ = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        let dataDirectoryURL = temporaryDirectoryURL.appendingPathComponent("data", isDirectory: true)
+        let automationURL = dataDirectoryURL.appendingPathComponent("automation.json")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        try encoder.encode(settings).write(to: automationURL, options: .atomic)
+    }
+
 }

@@ -94,8 +94,11 @@ struct ExportService {
             "previous_state_code",
             "current_state",
             "state_code",
+            "app_name",
+            "app_bundle_id",
             "date",
             "source",
+            "source_detail",
             "created_at",
         ]
 
@@ -107,13 +110,16 @@ struct ExportService {
                 $0.previousStateCode ?? "",
                 $0.currentState,
                 $0.stateCode,
+                $0.appName ?? "",
+                $0.appBundleIdentifier ?? "",
                 $0.date,
                 $0.source,
+                $0.sourceDetail ?? "",
                 $0.createdAt,
             ]
         }
 
-        let columnWidths = [26, 30, 18, 20, 18, 20, 14, 16, 30]
+        let columnWidths = [26, 30, 18, 20, 18, 20, 18, 28, 14, 16, 42, 30]
             .enumerated()
             .map { index, width in
                 "<col min=\"\(index + 1)\" max=\"\(index + 1)\" width=\"\(width)\" customWidth=\"1\"/>"

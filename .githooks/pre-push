@@ -1,0 +1,9 @@
+#!/bin/zsh
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+echo "运行测试中..."
+swift test >/dev/null
+echo "测试通过，继续推送。"

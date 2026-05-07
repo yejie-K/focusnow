@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 import Combine
+import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate, @preconcurrency UNUserNotificationCenterDelegate {
     let store = RecordStore()
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
@@ -11,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var settingsWindow: NSWindow?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
+    private var workspaceActivationObserver: NSObjectProtocol?
     private var dismissTask: DispatchWorkItem?
     private var lastTriggerDate = Date.distantPast
     private var isDraggingBeacon = false
@@ -49,6 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         self.statusItem = statusItem
         self.popover = popover
 
+        configureNotifications()
+        configureAutoSwitchMonitoring()
         bindThemeUpdates()
         refreshStatusItemArtwork()
         configureBeaconWindows()
@@ -85,12 +89,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if let localMouseMonitor {
             NSEvent.removeMonitor(localMouseMonitor)
         }
+        if let workspaceActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+        }
         NotificationCenter.default.removeObserver(self)
     }
 
     func popoverDidClose(_ notification: Notification) {
         dismissTask?.cancel()
         dismissTask = nil
+    }
+
+    private func configureNotifications() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+
+        let snooze = UNNotificationAction(
+            identifier: ReminderNotificationDescriptor.snoozeActionID,
+            title: "稍后提醒"
+        )
+        let rest = UNNotificationAction(
+            identifier: ReminderNotificationDescriptor.restActionID,
+            title: "切到休息恢复"
+        )
+        let category = UNNotificationCategory(
+            identifier: ReminderNotificationDescriptor.categoryID,
+            actions: [snooze, rest],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([category])
+    }
+
+    private func configureAutoSwitchMonitoring() {
+        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else {
+                return
+            }
+
+            let localizedName = app.localizedName ?? app.bundleIdentifier ?? "Unknown"
+            let bundleIdentifier = app.bundleIdentifier
+            let bundleURLPath = app.bundleURL?.path
+
+            Task { @MainActor [weak self] in
+                self?.store.observeFrontmostApplication(
+                    localizedName: localizedName,
+                    bundleIdentifier: bundleIdentifier,
+                    bundleURLPath: bundleURLPath
+                )
+            }
+        }
+
+        if let app = NSWorkspace.shared.frontmostApplication {
+            observeFrontmostApplication(app)
+        }
+        refreshRunningApplications()
+
+        Timer.publish(every: 5, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] now in
+                self?.refreshRunningApplications()
+                self?.store.evaluateAutoSwitch(now: now)
+            }
+            .store(in: &cancellables)
+    }
+
+    private func observeFrontmostApplication(_ app: NSRunningApplication) {
+        store.observeFrontmostApplication(
+            localizedName: app.localizedName ?? app.bundleIdentifier ?? "Unknown",
+            bundleIdentifier: app.bundleIdentifier,
+            bundleURLPath: app.bundleURL?.path
+        )
+    }
+
+    private func refreshRunningApplications() {
+        let apps = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> FrontmostApplicationSnapshot? in
+                guard let localizedName = app.localizedName ?? app.bundleIdentifier else {
+                    return nil
+                }
+                return FrontmostApplicationSnapshot(
+                    localizedName: localizedName,
+                    bundleIdentifier: app.bundleIdentifier,
+                    bundleURLPath: app.bundleURL?.path
+                )
+            }
+        store.observeRunningApplications(apps)
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        defer { completionHandler() }
+
+        let segmentKey = response.notification.request.content.userInfo[ReminderNotificationDescriptor.segmentKeyUserInfoKey] as? String
+        guard let segmentKey else {
+            return
+        }
+
+        switch response.actionIdentifier {
+        case ReminderNotificationDescriptor.snoozeActionID:
+            Task { @MainActor [weak self] in
+                self?.store.snoozeReminder(segmentKey: segmentKey)
+            }
+        case ReminderNotificationDescriptor.restActionID:
+            Task { @MainActor [weak self] in
+                self?.store.switchToRestFromReminder(segmentKey: segmentKey)
+            }
+        default:
+            break
+        }
     }
 
     private func bindThemeUpdates() {
