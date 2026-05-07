@@ -16,6 +16,7 @@ final class RecordStore: ObservableObject {
     @Published private(set) var currentFrontmostApplication: FrontmostApplicationSnapshot?
     @Published private(set) var knownApplications: [FrontmostApplicationSnapshot] = []
     @Published private(set) var autoSwitchCandidate: AutoSwitchCandidate?
+    @Published private(set) var autoSwitchFeedbackEvent: AutoSwitchFeedbackEvent?
 
     let baseDirectoryURL: URL
     private let dataDirectoryURL: URL
@@ -206,6 +207,54 @@ final class RecordStore: ObservableObject {
         persistAutomationHandlingError(title: "保存自动切换失败")
     }
 
+    func setAutoSwitchCountdownStyle(_ style: AutoSwitchCountdownStyle) {
+        guard automationSettings.autoSwitch.countdownStyle != style else {
+            return
+        }
+        automationSettings.autoSwitch.countdownStyle = style
+        persistAutomationHandlingError(title: "保存自动切换失败")
+    }
+
+    func setAutoSwitchFeedbackBeaconPulse(_ enabled: Bool) {
+        guard automationSettings.autoSwitch.feedback.beaconPulse != enabled else {
+            return
+        }
+        automationSettings.autoSwitch.feedback.beaconPulse = enabled
+        persistAutomationHandlingError(title: "保存自动反馈失败")
+    }
+
+    func setAutoSwitchFeedbackBeaconBubble(_ enabled: Bool) {
+        guard automationSettings.autoSwitch.feedback.beaconBubble != enabled else {
+            return
+        }
+        automationSettings.autoSwitch.feedback.beaconBubble = enabled
+        persistAutomationHandlingError(title: "保存自动反馈失败")
+    }
+
+    func setAutoSwitchFeedbackTimelineHighlight(_ enabled: Bool) {
+        guard automationSettings.autoSwitch.feedback.timelineHighlight != enabled else {
+            return
+        }
+        automationSettings.autoSwitch.feedback.timelineHighlight = enabled
+        persistAutomationHandlingError(title: "保存自动反馈失败")
+    }
+
+    func setAutoSwitchFeedbackSystemNotification(_ enabled: Bool) {
+        guard automationSettings.autoSwitch.feedback.systemNotification != enabled else {
+            return
+        }
+        automationSettings.autoSwitch.feedback.systemNotification = enabled
+        persistAutomationHandlingError(title: "保存自动反馈失败")
+
+        guard enabled else {
+            return
+        }
+
+        Task { @MainActor [weak self] in
+            await self?.warmupAutoSwitchNotificationAuthorization()
+        }
+    }
+
     func autoSwitchRule(for stateCode: String) -> StateAppRule {
         automationSettings.autoSwitch.rules.first(where: { $0.stateCode == stateCode })
             ?? StateAppRule(stateCode: stateCode, isEnabled: false, appIdentifiers: [])
@@ -239,6 +288,16 @@ final class RecordStore: ObservableObject {
         }
 
         automationSettings.autoSwitch.rules[index].appIdentifiers = identifiers
+        var displayNames = StateAppRule.normalizedDisplayNames(
+            automationSettings.autoSwitch.rules[index].appDisplayNames,
+            allowedIdentifiers: identifiers
+        )
+        for identifier in identifiers where displayNames[identifier] == nil {
+            if let displayName = cachedDisplayName(for: identifier) {
+                displayNames[identifier] = displayName
+            }
+        }
+        automationSettings.autoSwitch.rules[index].appDisplayNames = displayNames
         autoSwitchCandidate = nil
         persistAutomationHandlingError(title: "保存自动切换失败")
     }
@@ -250,15 +309,20 @@ final class RecordStore: ObservableObject {
               let targetIndex = automationSettings.autoSwitch.rules.firstIndex(where: { $0.stateCode == stateCode }) else {
             return
         }
+        let displayName = cachedDisplayName(for: appIdentifier)
 
         for index in automationSettings.autoSwitch.rules.indices {
             automationSettings.autoSwitch.rules[index].appIdentifiers.removeAll {
                 $0.caseInsensitiveCompare(appIdentifier) == .orderedSame
             }
+            removeCachedAutoSwitchDisplayName(for: appIdentifier, fromRuleAt: index)
         }
 
         if !automationSettings.autoSwitch.rules[targetIndex].appIdentifiers.contains(where: { $0.caseInsensitiveCompare(appIdentifier) == .orderedSame }) {
             automationSettings.autoSwitch.rules[targetIndex].appIdentifiers.append(appIdentifier)
+        }
+        if let displayName {
+            automationSettings.autoSwitch.rules[targetIndex].appDisplayNames[appIdentifier] = displayName
         }
         automationSettings.autoSwitch.rules[targetIndex].isEnabled = true
         autoSwitchCandidate = nil
@@ -274,6 +338,7 @@ final class RecordStore: ObservableObject {
         automationSettings.autoSwitch.rules[index].appIdentifiers.removeAll {
             $0.caseInsensitiveCompare(identifier) == .orderedSame
         }
+        removeCachedAutoSwitchDisplayName(for: identifier, fromRuleAt: index)
 
         guard automationSettings.autoSwitch.rules[index].appIdentifiers != original else {
             return
@@ -288,10 +353,22 @@ final class RecordStore: ObservableObject {
     }
 
     func autoSwitchDisplayName(for identifier: String) -> String {
-        knownApplications.first { app in
-            app.stableIdentifier.caseInsensitiveCompare(identifier) == .orderedSame
-                || app.localizedName.caseInsensitiveCompare(identifier) == .orderedSame
-        }?.localizedName ?? identifier
+        cachedDisplayName(for: identifier) ?? identifier
+    }
+
+    private func removeCachedAutoSwitchDisplayName(for identifier: String, fromRuleAt index: Int) {
+        let normalizedIdentifier = Self.normalizedAppIdentifier(identifier)
+        guard !normalizedIdentifier.isEmpty else {
+            return
+        }
+
+        let matchingKeys = automationSettings.autoSwitch.rules[index].appDisplayNames.keys.filter {
+            Self.normalizedAppIdentifier($0) == normalizedIdentifier
+        }
+
+        for key in matchingKeys {
+            automationSettings.autoSwitch.rules[index].appDisplayNames.removeValue(forKey: key)
+        }
     }
 
     func autoSwitchBoundState(for app: FrontmostApplicationSnapshot) -> StateDefinition? {
@@ -544,6 +621,30 @@ final class RecordStore: ObservableObject {
         apps.forEach(upsertKnownApplication)
     }
 
+    private func cachedDisplayName(for identifier: String) -> String? {
+        let normalizedIdentifier = Self.normalizedAppIdentifier(identifier)
+        guard !normalizedIdentifier.isEmpty else {
+            return nil
+        }
+
+        if let app = knownApplications.first(where: {
+            Self.normalizedAppIdentifier($0.stableIdentifier) == normalizedIdentifier
+                || Self.normalizedAppIdentifier($0.localizedName) == normalizedIdentifier
+        }) {
+            return app.localizedName
+        }
+
+        for rule in automationSettings.autoSwitch.rules {
+            if let match = rule.appDisplayNames.first(where: {
+                Self.normalizedAppIdentifier($0.key) == normalizedIdentifier
+            }) {
+                return match.value
+            }
+        }
+
+        return nil
+    }
+
     @discardableResult
     func evaluateAutoSwitch(now: Date = Date()) -> AutoSwitchResult? {
         guard automationSettings.autoSwitch.isEnabled,
@@ -563,7 +664,7 @@ final class RecordStore: ObservableObject {
         }
 
         do {
-            try recordTransition(
+            let event = try recordTransition(
                 to: state,
                 timestamp: now,
                 source: "auto_app_rule",
@@ -572,13 +673,16 @@ final class RecordStore: ObservableObject {
                 appBundleIdentifier: candidate.bundleIdentifier
             )
             autoSwitchCandidate = nil
-            return AutoSwitchResult(
+            let result = AutoSwitchResult(
+                recordID: event.id,
                 stateCode: state.code,
                 stateLabel: state.label,
                 appName: candidate.appName,
                 appBundleIdentifier: candidate.bundleIdentifier,
                 sourceDetail: candidate.reason
             )
+            publishAutoSwitchFeedback(from: result, occurredAt: now)
+            return result
         } catch {
             autoSwitchCandidate = nil
             activeAlert = AppAlert(title: "自动切换失败", message: error.localizedDescription)
@@ -719,6 +823,30 @@ final class RecordStore: ObservableObject {
                 left.localizedName.localizedCaseInsensitiveCompare(right.localizedName) == .orderedAscending
             }
         knownApplications = Array(sorted)
+
+        if refreshAutoSwitchDisplayNameCache(for: app) {
+            persistAutomationHandlingError(title: "保存自动切换失败")
+        }
+    }
+
+    private func refreshAutoSwitchDisplayNameCache(for app: FrontmostApplicationSnapshot) -> Bool {
+        var didChange = false
+
+        for index in automationSettings.autoSwitch.rules.indices {
+            let identifiers = automationSettings.autoSwitch.rules[index].appIdentifiers
+            guard let identifier = identifiers.first(where: { Self.appIdentifier($0, matches: app) }) else {
+                continue
+            }
+
+            guard automationSettings.autoSwitch.rules[index].appDisplayNames[identifier] != app.localizedName else {
+                continue
+            }
+
+            automationSettings.autoSwitch.rules[index].appDisplayNames[identifier] = app.localizedName
+            didChange = true
+        }
+
+        return didChange
     }
 
     private var sortedRecords: [RecordEvent] {
@@ -836,6 +964,17 @@ final class RecordStore: ObservableObject {
         activeAlert = AppAlert(title: "提醒不可用", message: "通知权限未开启，请先到系统设置里允许通知。")
     }
 
+    private func warmupAutoSwitchNotificationAuthorization() async {
+        let authorized = await ensureReminderAuthorization()
+        guard !authorized else {
+            return
+        }
+
+        automationSettings.autoSwitch.feedback.systemNotification = false
+        persistAutomationHandlingError(title: "保存自动反馈失败")
+        activeAlert = AppAlert(title: "通知不可用", message: "通知权限未开启，已关闭 Auto 系统通知。")
+    }
+
     private func currentReminderContext() -> (state: StateDefinition, startedAt: Date, segmentKey: String)? {
         guard let state = currentStateDefinition,
               let startedAt = currentStateStartedAt else {
@@ -862,6 +1001,7 @@ final class RecordStore: ObservableObject {
         return segmentKey
     }
 
+    @discardableResult
     private func recordTransition(
         to state: StateDefinition,
         timestamp: Date,
@@ -869,7 +1009,7 @@ final class RecordStore: ObservableObject {
         sourceDetail: String? = nil,
         appName: String? = nil,
         appBundleIdentifier: String? = nil
-    ) throws {
+    ) throws -> RecordEvent {
         guard states.contains(where: { $0.code == state.code }) else {
             throw StoreError.stateNotFound
         }
@@ -895,6 +1035,31 @@ final class RecordStore: ObservableObject {
 
         if source == "manual_click" {
             lastManualRecordAt = timestamp
+        }
+
+        return event
+    }
+
+    private func publishAutoSwitchFeedback(from result: AutoSwitchResult, occurredAt: Date) {
+        let event = AutoSwitchFeedbackEvent(
+            recordID: result.recordID,
+            stateCode: result.stateCode,
+            stateLabel: result.stateLabel,
+            appName: result.appName,
+            appBundleIdentifier: result.appBundleIdentifier,
+            sourceDetail: result.sourceDetail,
+            occurredAt: occurredAt
+        )
+        autoSwitchFeedbackEvent = event
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.autoSwitchFeedbackEvent?.id == event.id else {
+                    return
+                }
+                self.autoSwitchFeedbackEvent = nil
+            }
         }
     }
 
@@ -1074,7 +1239,8 @@ final class RecordStore: ObservableObject {
                 return StateAppRule(
                     stateCode: existing.stateCode,
                     isEnabled: existing.isEnabled,
-                    appIdentifiers: existing.appIdentifiers
+                    appIdentifiers: existing.appIdentifiers,
+                    appDisplayNames: existing.appDisplayNames
                 )
             }
             return StateAppRule(stateCode: state.code, isEnabled: false, appIdentifiers: [])

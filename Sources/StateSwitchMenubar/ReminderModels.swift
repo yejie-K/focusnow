@@ -100,17 +100,23 @@ struct AutoSwitchSettings: Codable, Equatable {
     var isEnabled: Bool = false
     var settleSeconds: Int = 60
     var manualCooldownSeconds: Int = 180
+    var countdownStyle: AutoSwitchCountdownStyle = .bar
+    var feedback: AutoSwitchFeedbackSettings = AutoSwitchFeedbackSettings()
     var rules: [StateAppRule] = []
 
     init(
         isEnabled: Bool = false,
         settleSeconds: Int = 60,
         manualCooldownSeconds: Int = 180,
+        countdownStyle: AutoSwitchCountdownStyle = .bar,
+        feedback: AutoSwitchFeedbackSettings = AutoSwitchFeedbackSettings(),
         rules: [StateAppRule] = []
     ) {
         self.isEnabled = isEnabled
         self.settleSeconds = Self.clampSettleSeconds(settleSeconds)
         self.manualCooldownSeconds = Self.clampManualCooldownSeconds(manualCooldownSeconds)
+        self.countdownStyle = countdownStyle
+        self.feedback = feedback
         self.rules = rules
     }
 
@@ -118,6 +124,8 @@ struct AutoSwitchSettings: Codable, Equatable {
         case isEnabled = "is_enabled"
         case settleSeconds = "settle_seconds"
         case manualCooldownSeconds = "manual_cooldown_seconds"
+        case countdownStyle = "countdown_style"
+        case feedback
         case rules
     }
 
@@ -126,6 +134,8 @@ struct AutoSwitchSettings: Codable, Equatable {
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
         settleSeconds = Self.clampSettleSeconds(try container.decodeIfPresent(Int.self, forKey: .settleSeconds) ?? 60)
         manualCooldownSeconds = Self.clampManualCooldownSeconds(try container.decodeIfPresent(Int.self, forKey: .manualCooldownSeconds) ?? 180)
+        countdownStyle = try container.decodeIfPresent(AutoSwitchCountdownStyle.self, forKey: .countdownStyle) ?? .bar
+        feedback = try container.decodeIfPresent(AutoSwitchFeedbackSettings.self, forKey: .feedback) ?? AutoSwitchFeedbackSettings()
         rules = try container.decodeIfPresent([StateAppRule].self, forKey: .rules) ?? []
     }
 
@@ -138,23 +148,82 @@ struct AutoSwitchSettings: Codable, Equatable {
     }
 }
 
+enum AutoSwitchCountdownStyle: String, CaseIterable, Identifiable, Codable {
+    case bar
+    case ring
+    case fill
+    case off
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .bar:
+            return "底条"
+        case .ring:
+            return "圆环"
+        case .fill:
+            return "水位"
+        case .off:
+            return "关闭"
+        }
+    }
+}
+
+struct AutoSwitchFeedbackSettings: Codable, Equatable {
+    var beaconPulse: Bool = true
+    var beaconBubble: Bool = true
+    var timelineHighlight: Bool = true
+    var systemNotification: Bool = true
+
+    init(
+        beaconPulse: Bool = true,
+        beaconBubble: Bool = true,
+        timelineHighlight: Bool = true,
+        systemNotification: Bool = true
+    ) {
+        self.beaconPulse = beaconPulse
+        self.beaconBubble = beaconBubble
+        self.timelineHighlight = timelineHighlight
+        self.systemNotification = systemNotification
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case beaconPulse = "beacon_pulse"
+        case beaconBubble = "beacon_bubble"
+        case timelineHighlight = "timeline_highlight"
+        case systemNotification = "system_notification"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        beaconPulse = try container.decodeIfPresent(Bool.self, forKey: .beaconPulse) ?? true
+        beaconBubble = try container.decodeIfPresent(Bool.self, forKey: .beaconBubble) ?? true
+        timelineHighlight = try container.decodeIfPresent(Bool.self, forKey: .timelineHighlight) ?? true
+        systemNotification = try container.decodeIfPresent(Bool.self, forKey: .systemNotification) ?? true
+    }
+}
+
 struct StateAppRule: Codable, Identifiable, Hashable {
     let stateCode: String
     var isEnabled: Bool
     var appIdentifiers: [String]
+    var appDisplayNames: [String: String]
 
     var id: String { stateCode }
 
-    init(stateCode: String, isEnabled: Bool, appIdentifiers: [String]) {
+    init(stateCode: String, isEnabled: Bool, appIdentifiers: [String], appDisplayNames: [String: String] = [:]) {
         self.stateCode = stateCode
         self.isEnabled = isEnabled
         self.appIdentifiers = Self.normalizedIdentifiers(appIdentifiers)
+        self.appDisplayNames = Self.normalizedDisplayNames(appDisplayNames, allowedIdentifiers: self.appIdentifiers)
     }
 
     private enum CodingKeys: String, CodingKey {
         case stateCode = "state_code"
         case isEnabled = "is_enabled"
         case appIdentifiers = "app_identifiers"
+        case appDisplayNames = "app_display_names"
     }
 
     init(from decoder: Decoder) throws {
@@ -163,6 +232,10 @@ struct StateAppRule: Codable, Identifiable, Hashable {
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
         appIdentifiers = Self.normalizedIdentifiers(
             try container.decodeIfPresent([String].self, forKey: .appIdentifiers) ?? []
+        )
+        appDisplayNames = Self.normalizedDisplayNames(
+            try container.decodeIfPresent([String: String].self, forKey: .appDisplayNames) ?? [:],
+            allowedIdentifiers: appIdentifiers
         )
     }
 
@@ -183,6 +256,28 @@ struct StateAppRule: Codable, Identifiable, Hashable {
 
             seen.insert(key)
             output.append(trimmed)
+        }
+
+        return output
+    }
+
+    static func normalizedDisplayNames(_ input: [String: String], allowedIdentifiers: [String]) -> [String: String] {
+        let allowedKeys = Set(allowedIdentifiers.map { $0.lowercased() })
+        var output: [String: String] = [:]
+
+        for (identifier, displayName) in input {
+            let trimmedIdentifier = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedIdentifier.isEmpty,
+                  !trimmedDisplayName.isEmpty,
+                  allowedKeys.contains(trimmedIdentifier.lowercased()) else {
+                continue
+            }
+
+            let canonicalIdentifier = allowedIdentifiers.first {
+                $0.caseInsensitiveCompare(trimmedIdentifier) == .orderedSame
+            } ?? trimmedIdentifier
+            output[canonicalIdentifier] = trimmedDisplayName
         }
 
         return output
@@ -221,11 +316,27 @@ struct AutoSwitchCandidate: Identifiable, Equatable {
 }
 
 struct AutoSwitchResult: Equatable {
+    let recordID: String
     let stateCode: String
     let stateLabel: String
     let appName: String
     let appBundleIdentifier: String?
     let sourceDetail: String
+}
+
+struct AutoSwitchFeedbackEvent: Identifiable, Equatable {
+    let id = UUID()
+    let recordID: String
+    let stateCode: String
+    let stateLabel: String
+    let appName: String
+    let appBundleIdentifier: String?
+    let sourceDetail: String
+    let occurredAt: Date
+
+    var displayLabel: String {
+        "\(stateLabel) - \(appName)"
+    }
 }
 
 enum ReminderNotificationDescriptor {

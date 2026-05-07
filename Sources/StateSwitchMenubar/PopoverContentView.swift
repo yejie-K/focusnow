@@ -9,6 +9,17 @@ struct PopoverContentView: View {
         case confirming(PromptBurstPayload)
     }
 
+    private enum Motion {
+        static let stage = Animation.spring(response: 0.42, dampingFraction: 0.86, blendDuration: 0.05)
+        static let settle = Animation.spring(response: 0.46, dampingFraction: 0.9, blendDuration: 0.05)
+        static let quick = Animation.easeOut(duration: 0.18)
+    }
+
+    private enum Chrome {
+        static let iconButtonSize: CGFloat = 28
+        static let iconSize: CGFloat = 12
+    }
+
     @EnvironmentObject private var store: RecordStore
     @State private var showTodayTimeline = false
     @State private var showSettings = false
@@ -47,11 +58,11 @@ struct PopoverContentView: View {
         .overlay(alignment: .topTrailing) {
             if !showSettings {
                 HStack(spacing: 8) {
-                    quitButton
                     settingsButton
+                    quitButton
                 }
-                .padding(.top, 10)
-                .padding(.trailing, 10)
+                .padding(.top, 14)
+                .padding(.trailing, 14)
             }
         }
         .alert(item: $store.activeAlert) { alert in
@@ -87,6 +98,7 @@ struct PopoverContentView: View {
             HStack(spacing: 8) {
                 overlayIconButton(symbol: "chevron.left", action: closeSettings)
                 Spacer(minLength: 0)
+                exportButton
                 quitButton
             }
 
@@ -96,22 +108,20 @@ struct PopoverContentView: View {
     }
 
     private func overlayIconButton(symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(theme.textMuted)
-                .frame(width: 28, height: 28)
-                .background(
-                    Circle()
-                        .fill(theme.surface.opacity(theme.style.id == .glass ? 0.72 : 0.94))
-                        .overlay(
-                            Circle()
-                                .stroke(theme.border.opacity(0.92), lineWidth: 1)
-                        )
-                )
+        ChromeCircleButton(
+            symbol: symbol,
+            theme: theme,
+            size: Chrome.iconButtonSize,
+            iconSize: Chrome.iconSize,
+            action: action
+        )
+        .zIndex(20)
+    }
+
+    private var exportButton: some View {
+        ExportCircleButton(theme: theme, size: Chrome.iconButtonSize) { scope in
+            exportRecords(scope: scope)
         }
-        .buttonStyle(.plain)
-        .contentShape(Rectangle())
         .zIndex(20)
     }
 
@@ -122,17 +132,29 @@ struct PopoverContentView: View {
             switch interactionStage {
             case .idle:
                 idlePhase
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.94)),
+                        removal: .opacity.combined(with: .scale(scale: 1.04))
+                    ))
             case .armingBurst(let payload), .confirming(let payload):
                 AnimatedPromptBurstView(payload: payload, theme: theme)
                     .id(payload.centerText + payload.particles.joined(separator: "|"))
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.88)),
+                        removal: .opacity.combined(with: .scale(scale: 1.05))
+                    ))
             case .selecting:
                 selectingReadyPhase
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .scale(scale: 0.92)),
+                        removal: .opacity.combined(with: .scale(scale: 0.96))
+                    ))
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: stageHeight)
         .clipShape(RoundedRectangle(cornerRadius: theme.style.stageCornerRadius, style: .continuous))
-        .animation(.spring(response: 0.34, dampingFraction: 0.9), value: interactionStageIsSelecting)
+        .animation(Motion.stage, value: interactionStageID)
     }
 
     private var idlePhase: some View {
@@ -261,7 +283,10 @@ struct PopoverContentView: View {
             stateGrid
             utilityRow
         }
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .transition(.asymmetric(
+            insertion: .opacity.combined(with: .move(edge: .bottom)),
+            removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+        ))
     }
 
     private var stateGrid: some View {
@@ -300,6 +325,7 @@ struct PopoverContentView: View {
                 .foregroundStyle(theme.stateText(on: state.colorHex, enabled: enabled, selected: selected))
                 .opacity(enabled || selected ? 1 : 0.92)
                 .disabled(!enabled)
+                .animation(Motion.quick, value: selected)
             }
         }
     }
@@ -423,6 +449,19 @@ struct PopoverContentView: View {
         return false
     }
 
+    private var interactionStageID: String {
+        switch interactionStage {
+        case .idle:
+            return "idle"
+        case .armingBurst:
+            return "arming"
+        case .selecting:
+            return "selecting"
+        case .confirming:
+            return "confirming"
+        }
+    }
+
     private var stageHeight: CGFloat {
         switch interactionStage {
         case .selecting:
@@ -447,12 +486,16 @@ struct PopoverContentView: View {
 
     private func startArmingPhase() {
         cancelPhaseTask()
-        showTodayTimeline = false
+        withAnimation(Motion.quick) {
+            showTodayTimeline = false
+        }
         store.armRecord()
-        interactionStage = .armingBurst(armingPayload())
+        withAnimation(Motion.stage) {
+            interactionStage = .armingBurst(armingPayload())
+        }
 
         let task = DispatchWorkItem {
-            withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) {
+            withAnimation(Motion.settle) {
                 interactionStage = .selecting
             }
         }
@@ -467,10 +510,13 @@ struct PopoverContentView: View {
         }
 
         cancelPhaseTask()
-        interactionStage = .confirming(confirmPayload(for: state.label))
+        withAnimation(Motion.stage) {
+            showTodayTimeline = false
+            interactionStage = .confirming(confirmPayload(for: state.label))
+        }
 
         let task = DispatchWorkItem {
-            withAnimation(.easeOut(duration: 0.2)) {
+            withAnimation(Motion.settle) {
                 interactionStage = .idle
             }
         }
@@ -502,6 +548,13 @@ struct PopoverContentView: View {
         withAnimation(.easeOut(duration: 0.18)) {
             showSettings = false
         }
+    }
+
+    private func exportRecords(scope: RecordRangeScope) {
+        guard let urls = store.exportAll(scope: scope) else {
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting(urls)
     }
 
     private func handleUndo() {

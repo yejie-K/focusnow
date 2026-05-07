@@ -2,7 +2,18 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+private enum AutoFeedbackPreviewKind: String, Identifiable, Equatable {
+    case beaconBubble
+    case systemNotification
+
+    var id: String { rawValue }
+}
+
 struct SettingsView: View {
+    private enum Chrome {
+        static let iconButtonSize: CGFloat = 28
+    }
+
     enum Presentation {
         case window
         case embedded
@@ -13,7 +24,6 @@ struct SettingsView: View {
         case auto = "Auto"
         case color = "color"
         case add = "Add"
-        case export = "Export"
 
         var id: String { rawValue }
     }
@@ -23,7 +33,7 @@ struct SettingsView: View {
     @State private var editingStateName = ""
     @State private var pendingDeleteState: StateDefinition?
     @State private var activePage: Page = .remind
-    @State private var exportScope: RecordRangeScope = .today
+    @State private var activeAutoFeedbackPreview: AutoFeedbackPreviewKind?
     let presentation: Presentation
 
     private var theme: AppTheme { store.theme }
@@ -83,10 +93,18 @@ struct SettingsView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 10) {
             Text("设置")
                 .font(.system(size: presentation == .window ? 26 : 22, weight: .bold))
                 .foregroundStyle(theme.ink)
+
+            Spacer(minLength: 0)
+
+            if presentation == .window {
+                ExportCircleButton(theme: theme, size: Chrome.iconButtonSize) { scope in
+                    exportRecords(scope: scope)
+                }
+            }
         }
     }
 
@@ -133,8 +151,6 @@ struct SettingsView: View {
             paletteSection
         case .add:
             tagSection
-        case .export:
-            exportSection
         }
     }
 
@@ -142,10 +158,7 @@ struct SettingsView: View {
         sectionCard {
             VStack(spacing: 8) {
                 settingRow(title: "启用") {
-                    Toggle("", isOn: autoSwitchEnabledBinding)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.regular)
+                    switchControl(autoSwitchEnabledBinding)
                 }
 
                 settingRow(title: "稳定") {
@@ -159,6 +172,10 @@ struct SettingsView: View {
                             store.setAutoSwitchSettleSeconds(store.automationSettings.autoSwitch.settleSeconds + 10)
                         }
                     )
+                }
+
+                settingRow(title: "倒计时") {
+                    autoCountdownStylePicker
                 }
 
                 settingRow(title: "前台") {
@@ -175,6 +192,7 @@ struct SettingsView: View {
                         .lineLimit(1)
                 }
 
+                autoFeedbackSection
                 autoBindingBoard
             }
         }
@@ -209,10 +227,7 @@ struct SettingsView: View {
                 }
 
                 settingRow(title: "启用") {
-                    Toggle("", isOn: reminderEnabledBinding)
-                        .labelsHidden()
-                        .toggleStyle(.switch)
-                        .controlSize(.regular)
+                    switchControl(reminderEnabledBinding)
                 }
 
                 settingRow(title: "稍后") {
@@ -340,59 +355,6 @@ struct SettingsView: View {
         }
     }
 
-    private var exportSection: some View {
-        sectionCard {
-            VStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    ForEach(RecordRangeScope.allCases) { scope in
-                        Button {
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                exportScope = scope
-                            }
-                        } label: {
-                            Text(scope.title)
-                                .font(.system(size: 12.5, weight: .semibold))
-                                .foregroundStyle(exportScope == scope ? theme.ink : theme.textMuted)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 9)
-                                .background(
-                                    Capsule(style: .continuous)
-                                        .fill(exportScope == scope ? theme.accentSoft.opacity(0.28) : theme.surface)
-                                        .overlay(
-                                            Capsule(style: .continuous)
-                                                .stroke(
-                                                    exportScope == scope ? theme.accentPrimary.opacity(0.52) : theme.border.opacity(0.92),
-                                                    lineWidth: 1
-                                                )
-                                        )
-                                )
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    Spacer(minLength: 0)
-                }
-
-                Button(action: exportRecords) {
-                    Text("导出\(exportScope.title)")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(theme.text)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(
-                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                .fill(theme.surfaceAlt.opacity(0.92))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                        .stroke(theme.border.opacity(0.95), lineWidth: 1)
-                                )
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
     private var reminderEnabledBinding: Binding<Bool> {
         Binding(
             get: { store.automationSettings.reminder.isEnabled },
@@ -407,6 +369,161 @@ struct SettingsView: View {
         )
     }
 
+    private var autoCountdownStylePicker: some View {
+        HStack(spacing: 6) {
+            ForEach(AutoSwitchCountdownStyle.allCases) { style in
+                Button {
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        store.setAutoSwitchCountdownStyle(style)
+                    }
+                } label: {
+                    Text(style.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(store.automationSettings.autoSwitch.countdownStyle == style ? theme.ink : theme.textDim)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(store.automationSettings.autoSwitch.countdownStyle == style ? theme.accentSoft.opacity(0.3) : theme.surfaceAlt.opacity(0.72))
+                                .overlay(
+                                    Capsule(style: .continuous)
+                                        .stroke(
+                                            store.automationSettings.autoSwitch.countdownStyle == style ? theme.accentPrimary.opacity(0.52) : theme.border.opacity(0.86),
+                                            lineWidth: 1
+                                        )
+                                )
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var autoFeedbackSection: some View {
+        VStack(spacing: 8) {
+            boardTitle("反馈")
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            feedbackSettingRow(title: "浮标气泡", kind: .beaconBubble, binding: autoFeedbackBeaconBubbleBinding)
+            feedbackPreviewSlot(.beaconBubble)
+
+            feedbackSettingRow(title: "系统通知", kind: .systemNotification, binding: autoFeedbackSystemNotificationBinding)
+            feedbackPreviewSlot(.systemNotification)
+        }
+    }
+
+    @ViewBuilder
+    private func feedbackPreviewSlot(_ kind: AutoFeedbackPreviewKind) -> some View {
+        if activeAutoFeedbackPreview == kind {
+            AutoFeedbackPreviewCard(kind: kind, theme: theme)
+                .id(kind.id)
+                .onHover { hovering in
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
+                        activeAutoFeedbackPreview = hovering ? kind : nil
+                    }
+                }
+                .padding(.top, -2)
+                .padding(.bottom, 2)
+                .transition(
+                    .asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity
+                    )
+                )
+        }
+    }
+
+    private func showAutoFeedbackPreview(_ kind: AutoFeedbackPreviewKind) {
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
+            if activeAutoFeedbackPreview == kind {
+                activeAutoFeedbackPreview = nil
+            } else {
+                activeAutoFeedbackPreview = kind
+            }
+        }
+    }
+
+    private var autoFeedbackBeaconBubbleBinding: Binding<Bool> {
+        Binding(
+            get: { store.automationSettings.autoSwitch.feedback.beaconBubble },
+            set: { store.setAutoSwitchFeedbackBeaconBubble($0) }
+        )
+    }
+
+    private var autoFeedbackSystemNotificationBinding: Binding<Bool> {
+        Binding(
+            get: { store.automationSettings.autoSwitch.feedback.systemNotification },
+            set: { store.setAutoSwitchFeedbackSystemNotification($0) }
+        )
+    }
+
+    private func feedbackToggle(_ binding: Binding<Bool>) -> some View {
+        switchControl(binding, size: .mini)
+    }
+
+    private func feedbackSettingRow(title: String, kind: AutoFeedbackPreviewKind, binding: Binding<Bool>) -> some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.text)
+
+                feedbackInfoIcon(kind)
+            }
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            feedbackToggle(binding)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(theme.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(
+                            activeAutoFeedbackPreview == kind ? theme.accentPrimary.opacity(0.46) : theme.border.opacity(0.95),
+                            lineWidth: activeAutoFeedbackPreview == kind ? 1.2 : 1
+                        )
+                )
+        )
+    }
+
+    private func feedbackInfoIcon(_ kind: AutoFeedbackPreviewKind) -> some View {
+        let isActive = activeAutoFeedbackPreview == kind
+
+        return ZStack {
+            Circle()
+                .fill(isActive ? theme.accentSoft.opacity(0.34) : theme.surfaceAlt.opacity(0.9))
+
+            Circle()
+                .stroke(isActive ? theme.accentPrimary.opacity(0.64) : theme.border.opacity(0.92), lineWidth: 1)
+
+            Text("i")
+                .font(.system(size: 10, weight: .heavy, design: .rounded))
+                .foregroundStyle(isActive ? theme.ink : theme.textMuted)
+        }
+        .frame(width: 16, height: 16)
+        .contentShape(Circle())
+        .onHover { hovering in
+            if hovering {
+                withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
+                    activeAutoFeedbackPreview = kind
+                }
+            }
+        }
+        .onTapGesture {
+            showAutoFeedbackPreview(kind)
+        }
+        .accessibilityLabel("预览")
+    }
+
+    private func switchControl(_ binding: Binding<Bool>, size: FocusSwitchSize = .regular) -> some View {
+        FocusSwitchControl(isOn: binding, theme: theme, size: size)
+    }
+
     private var autoCandidateLabel: String {
         guard let candidate = store.autoSwitchCandidate else {
             return "-"
@@ -419,13 +536,13 @@ struct SettingsView: View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 8) {
                 boardTitle("标签")
-                ScrollView(showsIndicators: true) {
+                ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 8) {
                         ForEach(store.states) { state in
                             autoStateDropCard(for: state)
                         }
                     }
-                    .padding(.trailing, 2)
+                    .padding(.trailing, 1)
                 }
                 .frame(height: autoBoardHeight)
             }
@@ -433,7 +550,7 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 boardTitle("App")
-                ScrollView(showsIndicators: true) {
+                ScrollView(showsIndicators: false) {
                     LazyVStack(spacing: 8) {
                         if store.knownApplications.isEmpty {
                             Text("暂无")
@@ -456,7 +573,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .padding(.trailing, 2)
+                    .padding(.trailing, 1)
                 }
                 .frame(height: autoBoardHeight)
             }
@@ -489,19 +606,17 @@ struct SettingsView: View {
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(theme.text)
                     .lineLimit(1)
+                    .layoutPriority(1)
 
                 Spacer(minLength: 0)
 
-                Toggle(
-                    "",
-                    isOn: Binding(
+                switchControl(
+                    Binding(
                         get: { store.autoSwitchRule(for: state.code).isEnabled },
                         set: { store.setAutoSwitchRuleEnabled(for: state.code, enabled: $0) }
-                    )
+                    ),
+                    size: .mini
                 )
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
             }
 
             if boundIdentifiers.isEmpty {
@@ -731,6 +846,7 @@ struct SettingsView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(theme.text)
                 .lineLimit(1)
+                .layoutPriority(1)
 
             Spacer(minLength: 0)
 
@@ -745,16 +861,13 @@ struct SettingsView: View {
                 }
             )
 
-            Toggle(
-                "",
-                isOn: Binding(
+            switchControl(
+                Binding(
                     get: { store.reminderRule(for: state.code).isEnabled },
                     set: { store.setReminderRuleEnabled(for: state.code, enabled: $0) }
-                )
+                ),
+                size: .mini
             )
-            .labelsHidden()
-            .toggleStyle(.switch)
-            .controlSize(.mini)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -781,19 +894,17 @@ struct SettingsView: View {
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(theme.text)
                     .lineLimit(1)
+                    .layoutPriority(1)
 
                 Spacer(minLength: 0)
 
-                Toggle(
-                    "",
-                    isOn: Binding(
+                switchControl(
+                    Binding(
                         get: { store.autoSwitchRule(for: state.code).isEnabled },
                         set: { store.setAutoSwitchRuleEnabled(for: state.code, enabled: $0) }
-                    )
+                    ),
+                    size: .mini
                 )
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
             }
 
             IMETextField(
@@ -992,8 +1103,8 @@ struct SettingsView: View {
         editingStateName = ""
     }
 
-    private func exportRecords() {
-        guard let urls = store.exportAll(scope: exportScope) else {
+    private func exportRecords(scope: RecordRangeScope) {
+        guard let urls = store.exportAll(scope: scope) else {
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting(urls)
@@ -1047,5 +1158,256 @@ struct SettingsView: View {
                 )
         }
         .buttonStyle(.plain)
+    }
+
+}
+
+private struct AutoFeedbackPreviewCard: View {
+    let kind: AutoFeedbackPreviewKind
+    let theme: AppTheme
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 45.0)) { context in
+            preview(at: context.date.timeIntervalSinceReferenceDate)
+                .frame(maxWidth: .infinity, minHeight: 74)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(theme.surfaceAlt.opacity(0.76))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(theme.accentPrimary.opacity(0.28), lineWidth: 1)
+                        )
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func preview(at time: TimeInterval) -> some View {
+        switch kind {
+        case .beaconBubble:
+            beaconBubblePreview(time)
+        case .systemNotification:
+            systemNotificationPreview(time)
+        }
+    }
+
+    private func beaconBubblePreview(_ time: TimeInterval) -> some View {
+        let progress = CGFloat((time * 0.82).truncatingRemainder(dividingBy: 1))
+        let entrance = min(progress / 0.34, 1)
+        let settle = CGFloat(sin(Double(min(progress, 0.5) / 0.5) * .pi)) * 0.03
+
+        return HStack(spacing: 10) {
+            miniBeacon
+
+            HStack(spacing: 7) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(theme.accentPrimary)
+
+                Text("看消息 · 飞书")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.text)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(theme.panel.opacity(0.96))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(theme.border.opacity(0.92), lineWidth: 1)
+                    )
+            )
+            .opacity(Double(entrance))
+            .offset(x: (1 - entrance) * -8)
+            .scaleEffect(0.96 + entrance * 0.04 + settle, anchor: .leading)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func systemNotificationPreview(_ time: TimeInterval) -> some View {
+        let pulse = 0.98 + 0.02 * CGFloat((sin(time * 3.4) + 1) / 2)
+
+        return HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [theme.accentSoft.opacity(0.9), theme.accentPrimary.opacity(0.42)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(theme.ink)
+                )
+                .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("FocusNow")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(theme.textDim)
+
+                Text("已切换到 看消息 · 飞书")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(theme.text)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(theme.panel.opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(theme.border.opacity(0.92), lineWidth: 1)
+                )
+                .shadow(color: theme.ink.opacity(0.1), radius: 14, y: 6)
+        )
+        .scaleEffect(pulse)
+    }
+
+    private var miniBeacon: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(theme.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(theme.border.opacity(0.92), lineWidth: 1)
+                )
+                .shadow(color: theme.ink.opacity(0.08), radius: 8, y: 3)
+
+            Circle()
+                .fill(theme.accentPrimary)
+                .frame(width: 10, height: 10)
+        }
+        .frame(width: 34, height: 34)
+    }
+}
+
+private enum FocusSwitchSize {
+    case regular
+    case compact
+    case mini
+
+    var width: CGFloat {
+        switch self {
+        case .regular:
+            return 64
+        case .compact:
+            return 54
+        case .mini:
+            return 34
+        }
+    }
+
+    var height: CGFloat {
+        switch self {
+        case .regular:
+            return 30
+        case .compact:
+            return 26
+        case .mini:
+            return 20
+        }
+    }
+
+    var fontSize: CGFloat {
+        switch self {
+        case .regular:
+            return 11
+        case .compact:
+            return 10
+        case .mini:
+            return 0
+        }
+    }
+
+    var segmentWidth: CGFloat {
+        showsLabels ? (width - 5) / 2 : height - 6
+    }
+
+    var segmentHeight: CGFloat {
+        showsLabels ? height - 5 : height - 6
+    }
+
+    var segmentOffset: CGFloat {
+        showsLabels ? segmentWidth / 2 : (width - segmentWidth - 6) / 2
+    }
+
+    var showsLabels: Bool {
+        self != .mini
+    }
+}
+
+private struct FocusSwitchControl: View {
+    @Binding var isOn: Bool
+    let theme: AppTheme
+    let size: FocusSwitchSize
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                isOn.toggle()
+            }
+        } label: {
+            ZStack {
+                Capsule(style: .continuous)
+                    .fill(trackFill)
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(trackStroke, lineWidth: 1)
+                    )
+
+                Capsule(style: .continuous)
+                    .fill(segmentFill)
+                    .frame(width: size.segmentWidth, height: size.segmentHeight)
+                    .shadow(color: theme.ink.opacity(isOn ? 0.12 : 0.06), radius: 4, y: 1)
+                    .offset(x: isOn ? size.segmentOffset : -size.segmentOffset)
+
+                if size.showsLabels {
+                    HStack(spacing: 0) {
+                        Text("关")
+                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(isOn ? theme.textDim : theme.ink)
+
+                        Text("开")
+                            .frame(maxWidth: .infinity)
+                            .foregroundStyle(isOn ? Color.white.opacity(0.96) : theme.textDim)
+                    }
+                    .font(.system(size: size.fontSize, weight: .bold))
+                    .padding(.horizontal, 4)
+                } else {
+                    Circle()
+                        .fill(isOn ? Color.white.opacity(0.94) : theme.textDim.opacity(0.74))
+                        .frame(width: 5, height: 5)
+                        .offset(x: isOn ? size.segmentOffset : -size.segmentOffset)
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .contentShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isOn ? "已开启" : "已关闭")
+    }
+
+    private var trackFill: Color {
+        isOn ? theme.accentSoft.opacity(0.24) : theme.surfaceAlt.opacity(0.84)
+    }
+
+    private var trackStroke: Color {
+        isOn ? theme.accentPrimary.opacity(0.46) : theme.border.opacity(0.95)
+    }
+
+    private var segmentFill: Color {
+        isOn ? theme.accentPrimary : theme.surface
     }
 }

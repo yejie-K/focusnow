@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var beaconWindows: [NSPanel] = []
+    private var feedbackBubbleWindows: [NSPanel] = []
     private var settingsWindow: NSWindow?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
@@ -54,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         configureNotifications()
         configureAutoSwitchMonitoring()
         bindThemeUpdates()
+        bindAutoSwitchFeedback()
         refreshStatusItemArtwork()
         configureBeaconWindows()
         startMouseMonitoring()
@@ -151,8 +153,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
         Timer.publish(every: 5, on: .main, in: .common)
             .autoconnect()
-            .sink { [weak self] now in
+            .sink { [weak self] _ in
                 self?.refreshRunningApplications()
+            }
+            .store(in: &cancellables)
+
+        Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] now in
                 self?.store.evaluateAutoSwitch(now: now)
             }
             .store(in: &cancellables)
@@ -183,6 +191,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        if notification.request.identifier.hasPrefix("state-switch-auto-") {
+            completionHandler([.banner])
+            return
+        }
+
         completionHandler([.banner, .sound])
     }
 
@@ -217,11 +230,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             .store(in: &cancellables)
     }
 
+    private func bindAutoSwitchFeedback() {
+        store.$autoSwitchFeedbackEvent
+            .receive(on: RunLoop.main)
+            .sink { [weak self] event in
+                guard let self else {
+                    return
+                }
+
+                guard let event else {
+                    self.hideFeedbackBubbleWindows()
+                    return
+                }
+
+                if self.store.automationSettings.autoSwitch.feedback.beaconBubble {
+                    self.showFeedbackBubbleWindows(for: event)
+                }
+
+                if self.store.automationSettings.autoSwitch.feedback.systemNotification {
+                    Task { @MainActor [weak self] in
+                        await self?.deliverAutoSwitchNotification(for: event)
+                    }
+                }
+            }
+            .store(in: &cancellables)
+    }
+
     private func refreshStatusItemArtwork() {
         guard let button = statusItem?.button else {
             return
         }
         button.image = StatusItemArtwork.makeImage(theme: store.theme)
+    }
+
+    private func showFeedbackBubbleWindows(for event: AutoSwitchFeedbackEvent) {
+        hideFeedbackBubbleWindows()
+
+        let bubbleSize = NSSize(width: 194, height: 42)
+        for beaconWindow in beaconWindows {
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: bubbleSize),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.level = .statusBar
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = false
+            panel.collectionBehavior = [.canJoinAllSpaces, .stationary]
+            panel.ignoresMouseEvents = true
+            panel.hidesOnDeactivate = false
+            panel.isReleasedWhenClosed = false
+            panel.contentView = NSHostingView(
+                rootView: AutoSwitchFeedbackBubbleView(event: event, theme: store.theme)
+            )
+            panel.setFrameOrigin(feedbackBubbleOrigin(size: bubbleSize, near: beaconWindow))
+            panel.orderFrontRegardless()
+            feedbackBubbleWindows.append(panel)
+        }
+    }
+
+    private func hideFeedbackBubbleWindows() {
+        feedbackBubbleWindows.forEach { $0.orderOut(nil) }
+        feedbackBubbleWindows.removeAll()
+    }
+
+    private func feedbackBubbleOrigin(size: NSSize, near beaconWindow: NSPanel) -> NSPoint {
+        let screen = screen(for: beaconWindow) ?? NSScreen.main
+        let visibleFrame = screen?.visibleFrame ?? beaconWindow.frame
+        let gap: CGFloat = 8
+        let beaconFrame = beaconWindow.frame
+
+        let canPlaceRight = beaconFrame.maxX + gap + size.width <= visibleFrame.maxX
+        let x = canPlaceRight
+            ? beaconFrame.maxX + gap
+            : max(visibleFrame.minX + gap, beaconFrame.minX - gap - size.width)
+        let rawY = beaconFrame.midY - size.height / 2
+        let y = min(max(rawY, visibleFrame.minY + gap), visibleFrame.maxY - size.height - gap)
+
+        return NSPoint(x: x, y: y)
+    }
+
+    private func deliverAutoSwitchNotification(for event: AutoSwitchFeedbackEvent) async {
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional:
+            break
+        case .notDetermined:
+            let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+            await store.refreshNotificationAuthorizationStatus()
+            guard granted else {
+                return
+            }
+        case .denied, .ephemeral:
+            await store.refreshNotificationAuthorizationStatus()
+            return
+        @unknown default:
+            await store.refreshNotificationAuthorizationStatus()
+            return
+        }
+
+        let content = UNMutableNotificationContent()
+        content.title = "Auto 已切换"
+        content.body = event.displayLabel
+        content.sound = nil
+
+        let request = UNNotificationRequest(
+            identifier: "state-switch-auto-\(event.id.uuidString)",
+            content: content,
+            trigger: nil
+        )
+
+        try? await center.add(request)
     }
 
     func showSettingsWindow() {
@@ -240,6 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func terminateApp() {
         settingsWindow?.orderOut(nil)
+        hideFeedbackBubbleWindows()
         beaconWindows.forEach { $0.orderOut(nil) }
         popover?.performClose(nil)
         NSApp.terminate(nil)
@@ -251,6 +375,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     private func configureBeaconWindows() {
+        hideFeedbackBubbleWindows()
         beaconWindows.forEach { $0.orderOut(nil) }
         beaconWindows.removeAll()
 

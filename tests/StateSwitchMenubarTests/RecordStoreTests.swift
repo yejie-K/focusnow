@@ -247,6 +247,31 @@ final class RecordStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testAutoSwitchFeedbackSettingsPersist() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        XCTAssertTrue(store.automationSettings.autoSwitch.feedback.beaconPulse)
+        XCTAssertTrue(store.automationSettings.autoSwitch.feedback.beaconBubble)
+        XCTAssertTrue(store.automationSettings.autoSwitch.feedback.timelineHighlight)
+        XCTAssertTrue(store.automationSettings.autoSwitch.feedback.systemNotification)
+        XCTAssertEqual(store.automationSettings.autoSwitch.countdownStyle, .bar)
+
+        store.setAutoSwitchFeedbackBeaconPulse(false)
+        store.setAutoSwitchFeedbackBeaconBubble(false)
+        store.setAutoSwitchFeedbackTimelineHighlight(false)
+        store.setAutoSwitchFeedbackSystemNotification(false)
+        store.setAutoSwitchCountdownStyle(.ring)
+
+        let reloaded = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        XCTAssertFalse(reloaded.automationSettings.autoSwitch.feedback.beaconPulse)
+        XCTAssertFalse(reloaded.automationSettings.autoSwitch.feedback.beaconBubble)
+        XCTAssertFalse(reloaded.automationSettings.autoSwitch.feedback.timelineHighlight)
+        XCTAssertFalse(reloaded.automationSettings.autoSwitch.feedback.systemNotification)
+        XCTAssertEqual(reloaded.automationSettings.autoSwitch.countdownStyle, .ring)
+    }
+
+    @MainActor
     func testReminderFiresOnceAndRespectsSnooze() throws {
         let now = Date()
         let startedAt = now.addingTimeInterval(-4_200)
@@ -335,6 +360,7 @@ final class RecordStoreTests: XCTestCase {
         let result = try XCTUnwrap(store.evaluateAutoSwitch(now: now.addingTimeInterval(10)))
 
         XCTAssertEqual(result.stateCode, "focus_work")
+        XCTAssertEqual(result.recordID, store.records.last?.id)
         XCTAssertEqual(result.appName, "Codex")
         XCTAssertEqual(store.currentStateCode, "focus_work")
         XCTAssertEqual(store.records.last?.source, "auto_app_rule")
@@ -342,6 +368,8 @@ final class RecordStoreTests: XCTestCase {
         XCTAssertEqual(store.records.last?.appBundleIdentifier, "com.openai.codex")
         XCTAssertEqual(store.records.last?.displayState, "深度工作 - Codex")
         XCTAssertTrue(store.records.last?.sourceDetail?.contains("Codex") == true)
+        XCTAssertEqual(store.autoSwitchFeedbackEvent?.recordID, store.records.last?.id)
+        XCTAssertEqual(store.autoSwitchFeedbackEvent?.displayLabel, "深度工作 - Codex")
     }
 
     @MainActor
@@ -411,6 +439,58 @@ final class RecordStoreTests: XCTestCase {
         store.unbindAutoSwitchAppIdentifier("com.openai.codex", from: "meeting")
 
         XCTAssertFalse(store.boundAutoSwitchAppIdentifiers(for: "meeting").contains("com.openai.codex"))
+    }
+
+    @MainActor
+    func testAutoSwitchVisualBindingCachesDisplayName() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+        let lark = FrontmostApplicationSnapshot(
+            localizedName: "飞书",
+            bundleIdentifier: "com.bytedance.ee.lark"
+        )
+
+        store.observeRunningApplications([lark])
+        store.bindAutoSwitchAppIdentifier(lark.stableIdentifier, to: "meeting")
+
+        XCTAssertEqual(store.autoSwitchDisplayName(for: "com.bytedance.ee.lark"), "飞书")
+
+        let reloaded = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        XCTAssertEqual(reloaded.autoSwitchDisplayName(for: "com.bytedance.ee.lark"), "飞书")
+    }
+
+    @MainActor
+    func testAutoSwitchTextBindingCachesKnownDisplayName() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+        let lark = FrontmostApplicationSnapshot(
+            localizedName: "飞书",
+            bundleIdentifier: "com.bytedance.ee.lark"
+        )
+
+        store.observeRunningApplications([lark])
+        store.setAutoSwitchAppBindingText(for: "meeting", text: "com.bytedance.ee.lark")
+
+        XCTAssertEqual(store.autoSwitchRule(for: "meeting").appDisplayNames["com.bytedance.ee.lark"], "飞书")
+
+        let reloaded = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+
+        XCTAssertEqual(reloaded.autoSwitchDisplayName(for: "com.bytedance.ee.lark"), "飞书")
+    }
+
+    @MainActor
+    func testAutoSwitchUnbindRemovesCachedDisplayNameCaseInsensitively() throws {
+        let store = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
+        let lark = FrontmostApplicationSnapshot(
+            localizedName: "飞书",
+            bundleIdentifier: "com.bytedance.ee.lark"
+        )
+
+        store.observeRunningApplications([lark])
+        store.bindAutoSwitchAppIdentifier(lark.stableIdentifier, to: "meeting")
+        store.unbindAutoSwitchAppIdentifier("COM.BYTEDANCE.EE.LARK", from: "meeting")
+
+        XCTAssertTrue(store.autoSwitchRule(for: "meeting").appIdentifiers.isEmpty)
+        XCTAssertTrue(store.autoSwitchRule(for: "meeting").appDisplayNames.isEmpty)
     }
 
     @MainActor

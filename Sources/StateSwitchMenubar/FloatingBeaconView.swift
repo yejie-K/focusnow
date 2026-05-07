@@ -10,6 +10,9 @@ struct FloatingBeaconView: View {
 
     private var theme: AppTheme { store.theme }
     private var proximity: CGFloat { min(max(store.beaconProximity, 0), 1) }
+    private var hasActiveCountdown: Bool {
+        store.automationSettings.autoSwitch.countdownStyle != .off && store.autoSwitchCandidate != nil
+    }
 
     private var stateColor: Color {
         if let hex = store.currentStateDefinition?.colorHex {
@@ -19,12 +22,15 @@ struct FloatingBeaconView: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 45.0, paused: proximity < 0.12)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: proximity < 0.12 && !hasActiveCountdown)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
+            let countdownProgress = autoSwitchCountdownProgress(at: context.date)
+            let countdownStyle = store.automationSettings.autoSwitch.countdownStyle
 
             ZStack {
                 rippleField(time: time)
-                beaconCore
+                beaconCore(fillProgress: countdownStyle == .fill ? countdownProgress : nil)
+                countdownProgressIndicator(style: countdownStyle, progress: countdownProgress)
             }
             .frame(width: panelSize, height: panelSize)
             .compositingGroup()
@@ -41,7 +47,7 @@ struct FloatingBeaconView: View {
         }
     }
 
-    private var beaconCore: some View {
+    private func beaconCore(fillProgress: CGFloat?) -> some View {
         let shellFill = theme.surface.mixed(with: theme.chrome, amount: 0.78)
         let innerTint = theme.surface.mixed(with: theme.panel, amount: 0.86)
         let shellStroke = theme.border.mixed(with: theme.surface, amount: 0.48)
@@ -75,6 +81,10 @@ struct FloatingBeaconView: View {
                         .padding(0.5)
                 }
                 .shadow(color: theme.ink.opacity(0.10 + proximity * 0.08), radius: 12 + proximity * 6, y: 6)
+
+            if let fillProgress {
+                countdownFill(progress: fillProgress)
+            }
 
             AccentControlView(
                 theme: theme,
@@ -128,5 +138,153 @@ struct FloatingBeaconView: View {
                     .padding(1.2)
             }
             .blur(radius: (1 - progress) * 0.45)
+    }
+
+    private func autoSwitchCountdownProgress(at date: Date) -> CGFloat? {
+        guard store.automationSettings.autoSwitch.isEnabled,
+              store.automationSettings.autoSwitch.countdownStyle != .off,
+              let candidate = store.autoSwitchCandidate else {
+            return nil
+        }
+
+        let settleSeconds = max(store.automationSettings.autoSwitch.settleSeconds, 1)
+        let elapsed = date.timeIntervalSince(candidate.firstSeenAt)
+        return min(max(CGFloat(elapsed / Double(settleSeconds)), 0), 1)
+    }
+
+    @ViewBuilder
+    private func countdownProgressIndicator(style: AutoSwitchCountdownStyle, progress: CGFloat?) -> some View {
+        if let progress {
+            switch style {
+            case .bar:
+                countdownBar(progress: progress)
+            case .ring:
+                countdownRing(progress: progress)
+            case .fill, .off:
+                EmptyView()
+            }
+        }
+    }
+
+    private func countdownBar(progress: CGFloat) -> some View {
+        ZStack(alignment: .leading) {
+            Capsule(style: .continuous)
+                .fill(theme.ink.opacity(0.08))
+
+            Capsule(style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [theme.accentSecondary.opacity(0.72), theme.accentPrimary.opacity(0.92)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .frame(width: max(3, 34 * progress))
+        }
+        .frame(width: 34, height: 3.5)
+        .offset(y: 24)
+        .shadow(color: theme.accentPrimary.opacity(0.18), radius: 4, y: 1)
+    }
+
+    private func countdownRing(progress: CGFloat) -> some View {
+        ZStack {
+            Circle()
+                .stroke(theme.ink.opacity(0.08), lineWidth: 2)
+
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(
+                    LinearGradient(
+                        colors: [theme.accentSecondary, theme.accentPrimary],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 44, height: 44)
+        .shadow(color: theme.accentPrimary.opacity(0.16), radius: 5, y: 1)
+    }
+
+    private func countdownFill(progress: CGFloat) -> some View {
+        ZStack(alignment: .bottom) {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(theme.ink.opacity(0.13))
+
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [theme.accentSecondary.opacity(0.52), theme.accentPrimary.opacity(0.64)],
+                        startPoint: .bottom,
+                        endPoint: .top
+                    )
+                )
+                .frame(height: coreSize * progress)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .frame(width: coreSize, height: coreSize)
+        .allowsHitTesting(false)
+    }
+
+}
+
+struct AutoSwitchFeedbackBubbleView: View {
+    let event: AutoSwitchFeedbackEvent
+    let theme: AppTheme
+
+    @State private var appeared = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(theme.accentPrimary)
+                .frame(width: 20, height: 20)
+                .background(
+                    Circle()
+                        .fill(theme.accentSoft.opacity(0.24))
+                )
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Auto")
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(theme.textDim)
+                    .lineLimit(1)
+
+                Text(event.displayLabel)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(theme.text)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(width: 194, height: 42)
+        .background(
+            Capsule(style: .continuous)
+                .fill(theme.panel.opacity(0.96))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(theme.border.opacity(0.9), lineWidth: 1)
+                )
+                .shadow(color: theme.ink.opacity(0.12), radius: 14, y: 6)
+        )
+        .opacity(appeared ? 1 : 0)
+        .offset(x: appeared ? 0 : -8)
+        .scaleEffect(appeared ? 1 : 0.96, anchor: .leading)
+        .onAppear {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                appeared = true
+            }
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.75) {
+                withAnimation(.easeOut(duration: 0.32)) {
+                    appeared = false
+                }
+            }
+        }
     }
 }
