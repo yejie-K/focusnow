@@ -690,22 +690,17 @@ struct SettingsView: View {
         return HStack(spacing: 8) {
             appIcon(for: app)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(app.localizedName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(theme.text)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                autoAppBindingBadge(boundState)
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .layoutPriority(1)
-
-            autoAppBindMenu(for: app, boundState: boundState)
+            Text(app.localizedName)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(theme.text)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(app.localizedName)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(boundState == nil ? theme.surface : theme.accentSoft.opacity(0.16))
@@ -714,74 +709,37 @@ struct SettingsView: View {
                         .stroke(boundState == nil ? theme.border.opacity(0.92) : theme.accentPrimary.opacity(0.34), lineWidth: 1)
                 )
         )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture {
+            presentAutoAppBindingMenu(for: app, boundState: boundState)
+        }
         .onDrag {
             NSItemProvider(object: app.stableIdentifier as NSString)
         }
     }
 
-    private func autoAppBindingBadge(_ state: StateDefinition?) -> some View {
-        HStack(spacing: 5) {
-            if let state {
-                Circle()
-                    .fill(Color(hex: state.colorHex))
-                    .frame(width: 8, height: 8)
-            } else {
-                Text("未绑定")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(theme.textDim)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.horizontal, state == nil ? 0 : 6)
-        .padding(.vertical, state == nil ? 0 : 5)
-        .background(
-            Group {
-                if state != nil {
-                    Capsule(style: .continuous)
-                        .fill(theme.surfaceAlt.opacity(0.88))
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(theme.border.opacity(0.84), lineWidth: 1)
-                        )
-                }
-            }
-        )
-    }
+    private func presentAutoAppBindingMenu(for app: FrontmostApplicationSnapshot, boundState: StateDefinition?) {
+        let menu = NSMenu()
 
-    private func autoAppBindMenu(for app: FrontmostApplicationSnapshot, boundState: StateDefinition?) -> some View {
-        Menu {
-            ForEach(store.states) { state in
-                Button {
+        for state in store.states {
+            let title = boundState?.code == state.code ? "\(state.label) ✓" : state.label
+            menu.addItem(
+                AutoAppBindingMenuItem(title: title) {
                     store.bindAutoSwitchAppIdentifier(app.stableIdentifier, to: state.code)
-                } label: {
-                    Text(state.label)
                 }
-            }
-
-            if let boundState {
-                Divider()
-                Button {
-                    store.unbindAutoSwitchAppIdentifier(app.stableIdentifier, from: boundState.code)
-                } label: {
-                    Text("解绑")
-                }
-            }
-        } label: {
-            Image(systemName: "link")
-                .font(.system(size: 10.5, weight: .bold))
-                .foregroundStyle(theme.textMuted)
-                .frame(width: 22, height: 22)
-                .background(
-                    Circle()
-                        .fill(theme.surfaceAlt.opacity(0.92))
-                        .overlay(
-                            Circle()
-                                .stroke(theme.border.opacity(0.9), lineWidth: 1)
-                        )
-                )
+            )
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+
+        if let boundState {
+            menu.addItem(.separator())
+            menu.addItem(
+                AutoAppBindingMenuItem(title: "解绑 \(boundState.label)") {
+                    store.unbindAutoSwitchAppIdentifier(app.stableIdentifier, from: boundState.code)
+                }
+            )
+        }
+
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
     }
 
     private func appIcon(for app: FrontmostApplicationSnapshot) -> some View {
@@ -1345,6 +1303,27 @@ private enum FocusSwitchSize {
 
     var showsLabels: Bool {
         self != .mini
+    }
+}
+
+private final class AutoAppBindingMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        handler = {}
+        super.init(coder: coder)
+        target = self
+        action = #selector(run)
+    }
+
+    @objc private func run() {
+        handler()
     }
 }
 
