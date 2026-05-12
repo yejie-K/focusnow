@@ -22,7 +22,7 @@ struct FloatingBeaconView: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: proximity < 0.12 && !hasActiveCountdown)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 45.0, paused: proximity < 0.12 && !hasActiveCountdown)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             let countdownProgress = autoSwitchCountdownProgress(at: context.date)
             let countdownStyle = store.automationSettings.autoSwitch.countdownStyle
