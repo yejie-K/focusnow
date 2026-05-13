@@ -493,6 +493,105 @@ final class RecordStoreTests: XCTestCase {
         XCTAssertTrue(store.autoSwitchRule(for: "meeting").appDisplayNames.isEmpty)
     }
 
+    func testDashboardFiltersCrossDayCarryFromPreviousState() throws {
+        let states = dashboardTestStates()
+        let now = try makeDate(year: 2026, month: 5, day: 12, hour: 10, minute: 30)
+        let records = [
+            dashboardRecord(
+                id: "msg_night",
+                state: states[1],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 11, hour: 23, minute: 30),
+                appName: "飞书"
+            ),
+            dashboardRecord(
+                id: "focus_morning",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 8, minute: 30),
+                appName: "Codex"
+            ),
+        ]
+
+        let snapshot = DashboardSnapshot.make(records: records, states: states, now: now)
+
+        XCTAssertEqual(snapshot.segments.count, 1)
+        XCTAssertEqual(snapshot.segments.first?.stateCode, "focus_work")
+        XCTAssertEqual(try XCTUnwrap(snapshot.segments.first?.duration), 2 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.filteredGapCount, 1)
+        XCTAssertEqual(snapshot.filteredGapDuration, 8.5 * 60 * 60, accuracy: 0.1)
+        XCTAssertFalse(snapshot.appShares.contains { $0.appName == "飞书" })
+    }
+
+    func testDashboardTruncatesLongDaytimeGap() throws {
+        let states = dashboardTestStates()
+        let now = try makeDate(year: 2026, month: 5, day: 12, hour: 14, minute: 0)
+        let records = [
+            dashboardRecord(
+                id: "focus",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 8, minute: 0),
+                appName: "Codex"
+            ),
+            dashboardRecord(
+                id: "rest",
+                state: states[2],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 13, minute: 30)
+            ),
+        ]
+
+        let snapshot = DashboardSnapshot.make(records: records, states: states, now: now)
+
+        XCTAssertEqual(snapshot.segments.count, 2)
+        XCTAssertEqual(snapshot.segments[0].duration, 3 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.segments[1].duration, 30 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.filteredGapCount, 1)
+        XCTAssertEqual(snapshot.filteredGapDuration, 2.5 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.totalDuration, 3.5 * 60 * 60, accuracy: 0.1)
+    }
+
+    func testDashboardAggregatesStateAndAppShares() throws {
+        let states = dashboardTestStates()
+        let now = try makeDate(year: 2026, month: 5, day: 12, hour: 12, minute: 0)
+        let records = [
+            dashboardRecord(
+                id: "focus_morning",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 8, minute: 0),
+                appName: "Codex"
+            ),
+            dashboardRecord(
+                id: "message_check",
+                state: states[1],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 9, minute: 30),
+                appName: "飞书"
+            ),
+            dashboardRecord(
+                id: "focus_return",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 10, minute: 0),
+                appName: "Codex"
+            ),
+        ]
+
+        let snapshot = DashboardSnapshot.make(records: records, states: states, now: now)
+
+        XCTAssertEqual(snapshot.transitionCount, 3)
+        XCTAssertEqual(snapshot.totalDuration, 4 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.stateShares.count, 2)
+        XCTAssertEqual(snapshot.stateShares[0].id, "focus_work")
+        XCTAssertEqual(snapshot.stateShares[0].duration, 3.5 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.stateShares[0].percentage, 0.875, accuracy: 0.001)
+        XCTAssertEqual(snapshot.stateShares[1].id, "message")
+        XCTAssertEqual(snapshot.stateShares[1].duration, 30 * 60, accuracy: 0.1)
+
+        XCTAssertEqual(snapshot.appShares.count, 2)
+        XCTAssertEqual(snapshot.appShares[0].appName, "Codex")
+        XCTAssertEqual(snapshot.appShares[0].stateLabel, "深度工作")
+        XCTAssertEqual(snapshot.appShares[0].duration, 3.5 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(snapshot.appShares[1].appName, "飞书")
+        XCTAssertEqual(snapshot.appShares[1].stateLabel, "看消息")
+        XCTAssertEqual(snapshot.appShares[1].duration, 30 * 60, accuracy: 0.1)
+    }
+
     @MainActor
     private func seedRecord(stateCode: String, currentState: String, recordedAt: Date) throws {
         _ = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)
@@ -532,6 +631,56 @@ final class RecordStoreTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(settings).write(to: automationURL, options: .atomic)
+    }
+
+    private func dashboardTestStates() -> [StateDefinition] {
+        [
+            StateDefinition(label: "深度工作", code: "focus_work", colorHex: "#4f6fd6", builtin: true),
+            StateDefinition(label: "看消息", code: "message", colorHex: "#b7792d", builtin: true),
+            StateDefinition(label: "休息", code: "rest", colorHex: "#4e8a61", builtin: true),
+        ]
+    }
+
+    private func dashboardRecord(
+        id: String,
+        state: StateDefinition,
+        recordedAt: Date,
+        appName: String? = nil
+    ) -> RecordEvent {
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        isoFormatter.timeZone = .current
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.timeZone = .current
+
+        return RecordEvent(
+            id: id,
+            recordedAt: isoFormatter.string(from: recordedAt),
+            date: dateFormatter.string(from: recordedAt),
+            previousState: nil,
+            previousStateCode: nil,
+            currentState: state.label,
+            stateCode: state.code,
+            appName: appName,
+            appBundleIdentifier: nil,
+            source: appName == nil ? "manual_click" : "auto_app_rule",
+            sourceDetail: nil,
+            createdAt: isoFormatter.string(from: recordedAt)
+        )
+    }
+
+    private func makeDate(year: Int, month: Int, day: Int, hour: Int, minute: Int) throws -> Date {
+        var components = DateComponents()
+        components.calendar = Calendar.current
+        components.timeZone = .current
+        components.year = year
+        components.month = month
+        components.day = day
+        components.hour = hour
+        components.minute = minute
+
+        return try XCTUnwrap(components.date)
     }
 
 }

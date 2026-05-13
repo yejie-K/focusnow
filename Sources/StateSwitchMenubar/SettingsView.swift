@@ -20,6 +20,7 @@ struct SettingsView: View {
     }
 
     enum Page: String, CaseIterable, Identifiable {
+        case board = "Board"
         case remind = "Remind"
         case auto = "Auto"
         case color = "color"
@@ -32,7 +33,7 @@ struct SettingsView: View {
     @State private var editingStateCode: String?
     @State private var editingStateName = ""
     @State private var pendingDeleteState: StateDefinition?
-    @State private var activePage: Page = .remind
+    @State private var activePage: Page = .board
     @State private var activeAutoFeedbackPreview: AutoFeedbackPreviewKind?
     let presentation: Presentation
 
@@ -113,9 +114,7 @@ struct SettingsView: View {
             HStack(spacing: 8) {
                 ForEach(Page.allCases) { page in
                     Button {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            activePage = page
-                        }
+                        activePage = page
                     } label: {
                         Text(page.rawValue)
                             .font(.system(size: 12.5, weight: .semibold))
@@ -143,6 +142,8 @@ struct SettingsView: View {
     @ViewBuilder
     private var activePageView: some View {
         switch activePage {
+        case .board:
+            DashboardView(theme: theme, states: store.states, records: store.records)
         case .remind:
             remindSection
         case .auto:
