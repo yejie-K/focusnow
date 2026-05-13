@@ -599,11 +599,35 @@ private final class CountdownBarLayerView: NSView {
 
 @MainActor
 private final class WaveFillLayerView: NSView {
+    private struct WaveProfile {
+        let amplitudeScale: CGFloat
+        let wavelengthScale: CGFloat
+        let primaryWeight: CGFloat
+        let secondaryWeight: CGFloat
+        let secondaryPhase: CGFloat
+        let secondaryFrequencyScale: CGFloat
+        let driftDuration: CFTimeInterval
+
+        static let fallback = WaveProfile(
+            amplitudeScale: 1,
+            wavelengthScale: 1,
+            primaryWeight: 0.68,
+            secondaryWeight: 0.22,
+            secondaryPhase: 0.9,
+            secondaryFrequencyScale: 2,
+            driftDuration: 1.9
+        )
+    }
+
     private struct WaveMetrics {
         let amplitude: CGFloat
         let wavelength: CGFloat
         let shapeWidth: CGFloat
         let shapeHeight: CGFloat
+        let primaryWeight: CGFloat
+        let secondaryWeight: CGFloat
+        let secondaryPhase: CGFloat
+        let secondaryFrequencyScale: CGFloat
     }
 
     private enum AnimationKey {
@@ -619,6 +643,7 @@ private final class WaveFillLayerView: NSView {
     private var activeAnimationKey = ""
     private var firstSeenAt = Date()
     private var settleSeconds = 1
+    private var waveProfile = WaveProfile.fallback
     private var waveDriftWavelength: CGFloat = 0
 
     override var isFlipped: Bool { true }
@@ -659,7 +684,13 @@ private final class WaveFillLayerView: NSView {
     ) {
         self.firstSeenAt = firstSeenAt
         self.settleSeconds = max(settleSeconds, 1)
-        requestedAnimationKey = "\(candidateID)|\(settleSeconds)|\(firstSeenAt.timeIntervalSinceReferenceDate)"
+        let nextAnimationKey = "\(candidateID)|\(settleSeconds)|\(firstSeenAt.timeIntervalSinceReferenceDate)"
+        if nextAnimationKey != requestedAnimationKey {
+            requestedAnimationKey = nextAnimationKey
+            waveProfile = makeWaveProfile(for: nextAnimationKey)
+        } else {
+            requestedAnimationKey = nextAnimationKey
+        }
         backgroundLayer.fillColor = backgroundColor.withAlphaComponent(0.13).cgColor
         gradientLayer.colors = [
             accentStart.withAlphaComponent(0.52).cgColor,
@@ -715,13 +746,18 @@ private final class WaveFillLayerView: NSView {
             return nil
         }
 
-        let amplitude = min(2.7, max(1.8, bounds.height * 0.08))
-        let wavelength = max(bounds.width * 0.9, 18)
+        let baseAmplitude = min(2.7, max(1.8, bounds.height * 0.08))
+        let amplitude = min(3.1, max(1.6, baseAmplitude * waveProfile.amplitudeScale))
+        let wavelength = max(bounds.width * 0.9 * waveProfile.wavelengthScale, 18)
         return WaveMetrics(
             amplitude: amplitude,
             wavelength: wavelength,
             shapeWidth: bounds.width + wavelength * 2,
-            shapeHeight: bounds.height + amplitude * 3
+            shapeHeight: bounds.height + amplitude * 3,
+            primaryWeight: waveProfile.primaryWeight,
+            secondaryWeight: waveProfile.secondaryWeight,
+            secondaryPhase: waveProfile.secondaryPhase,
+            secondaryFrequencyScale: waveProfile.secondaryFrequencyScale
         )
     }
 
@@ -802,8 +838,8 @@ private final class WaveFillLayerView: NSView {
 
     private func waveY(at x: CGFloat, metrics: WaveMetrics, centerY: CGFloat) -> CGFloat {
         let phase = x / metrics.wavelength * .pi * 2
-        let primary = sin(phase) * 0.68
-        let secondary = sin(phase * 2 + 0.9) * 0.22
+        let primary = sin(phase) * metrics.primaryWeight
+        let secondary = sin(phase * metrics.secondaryFrequencyScale + metrics.secondaryPhase) * metrics.secondaryWeight
         return centerY + metrics.amplitude * (primary + secondary)
     }
 
@@ -876,10 +912,52 @@ private final class WaveFillLayerView: NSView {
         let animation = CABasicAnimation(keyPath: "transform.translation.x")
         animation.fromValue = 0
         animation.toValue = -wavelength
-        animation.duration = 1.9
+        animation.duration = waveProfile.driftDuration
         animation.repeatCount = .infinity
         animation.timingFunction = CAMediaTimingFunction(name: .linear)
         return animation
+    }
+
+    // Keep each countdown visually unique without reintroducing per-frame randomness.
+    private func makeWaveProfile(for key: String) -> WaveProfile {
+        let seed = stableWaveSeed(for: key)
+        return WaveProfile(
+            amplitudeScale: sampleNoise(seed: seed, stream: 0, range: 0.9...1.12),
+            wavelengthScale: sampleNoise(seed: seed, stream: 1, range: 0.84...1.06),
+            primaryWeight: sampleNoise(seed: seed, stream: 2, range: 0.62...0.74),
+            secondaryWeight: sampleNoise(seed: seed, stream: 3, range: 0.18...0.30),
+            secondaryPhase: sampleNoise(seed: seed, stream: 4, range: 0.35...1.45),
+            secondaryFrequencyScale: sampleNoise(seed: seed, stream: 5, range: 1.7...2.35),
+            driftDuration: sampleNoise(seed: seed, stream: 6, range: 1.7...2.3)
+        )
+    }
+
+    private func stableWaveSeed(for key: String) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        for byte in key.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return hash
+    }
+
+    private func sampleNoise(seed: UInt64, stream: UInt64, range: ClosedRange<CGFloat>) -> CGFloat {
+        let unit = normalizedNoise(seed: seed, stream: stream)
+        return range.lowerBound + (range.upperBound - range.lowerBound) * unit
+    }
+
+    private func sampleNoise(seed: UInt64, stream: UInt64, range: ClosedRange<CFTimeInterval>) -> CFTimeInterval {
+        let unit = CFTimeInterval(normalizedNoise(seed: seed, stream: stream))
+        return range.lowerBound + (range.upperBound - range.lowerBound) * unit
+    }
+
+    private func normalizedNoise(seed: UInt64, stream: UInt64) -> CGFloat {
+        var value = seed &+ 0x9E3779B97F4A7C15 &* (stream &+ 1)
+        value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
+        value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
+        value ^= value >> 31
+        let masked = value & 0x0000FFFFFFFFFFFF
+        return CGFloat(Double(masked) / Double(0x0000FFFFFFFFFFFF))
     }
 
     private func stopWaveDrift() {
