@@ -5,14 +5,17 @@ import UserNotifications
 @MainActor
 final class RecordStore: ObservableObject {
     @Published private(set) var states: [StateDefinition] = []
-    @Published private(set) var records: [RecordEvent] = []
+    @Published private(set) var records: [RecordEvent] = [] {
+        didSet {
+            sortedRecordsCache = nil
+        }
+    }
     @Published private(set) var appearanceSelection = AppearanceSelection()
     @Published private(set) var automationSettings = AutomationSettings()
     @Published private(set) var notificationAuthorizationStatus: UNAuthorizationStatus = .notDetermined
     @Published var pendingTimestamp: Date?
     @Published var draftStateName = ""
     @Published var activeAlert: AppAlert?
-    @Published var beaconProximity: CGFloat = 0
     @Published private(set) var currentFrontmostApplication: FrontmostApplicationSnapshot?
     @Published private(set) var knownApplications: [FrontmostApplicationSnapshot] = []
     @Published private(set) var autoSwitchCandidate: AutoSwitchCandidate?
@@ -28,6 +31,7 @@ final class RecordStore: ObservableObject {
     private var reminderLoop: AnyCancellable?
     private var reminderRuntime = ReminderRuntime()
     private var lastManualRecordAt: Date?
+    private var sortedRecordsCache: [RecordEvent]?
 
     init(
         baseDirectoryURL: URL = AppPaths.resolveBaseDirectory(),
@@ -850,7 +854,11 @@ final class RecordStore: ObservableObject {
     }
 
     private var sortedRecords: [RecordEvent] {
-        records.sorted {
+        if let sortedRecordsCache {
+            return sortedRecordsCache
+        }
+
+        let sorted = records.sorted {
             let left = Self.date(from: $0.recordedAt) ?? .distantPast
             let right = Self.date(from: $1.recordedAt) ?? .distantPast
             if left != right {
@@ -858,6 +866,8 @@ final class RecordStore: ObservableObject {
             }
             return $0.id < $1.id
         }
+        sortedRecordsCache = sorted
+        return sorted
     }
 
     private func startReminderLoop() {
