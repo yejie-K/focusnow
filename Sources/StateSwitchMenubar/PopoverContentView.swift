@@ -12,6 +12,7 @@ struct PopoverContentView: View {
     private enum Motion {
         static let stage = Animation.spring(response: 0.42, dampingFraction: 0.86, blendDuration: 0.05)
         static let settle = Animation.spring(response: 0.46, dampingFraction: 0.9, blendDuration: 0.05)
+        static let screen = Animation.spring(response: 0.26, dampingFraction: 0.88, blendDuration: 0.04)
         static let quick = Animation.easeOut(duration: 0.18)
     }
 
@@ -32,28 +33,18 @@ struct PopoverContentView: View {
 
     var body: some View {
         panelShell {
-            if showSettings {
-                settingsScreen
-            } else {
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 12) {
-                        topStageView
-                        if !interactionStageIsSelecting {
-                            liveStatusSection
-                                .transition(.opacity.combined(with: .move(edge: .top)))
-                        }
-
-                        if showTodayTimeline && !interactionStageIsSelecting {
-                            historyTimeline
-                        }
-
-                        if interactionStageIsSelecting {
-                            selectingPhase
-                        }
-                    }
-                    .padding(.top, 4)
+            ZStack(alignment: .topLeading) {
+                if showSettings {
+                    settingsScreen
+                        .id("settings")
+                        .transition(.popoverMacScreenZoom)
+                } else {
+                    mainScreen
+                        .id("main")
+                        .transition(.popoverMacScreenZoom)
                 }
             }
+            .animation(Motion.screen, value: showSettings)
         }
         .overlay(alignment: .topTrailing) {
             if !showSettings {
@@ -83,6 +74,30 @@ struct PopoverContentView: View {
             interactionStage = .idle
             showSettings = false
         }
+    }
+
+    private var mainScreen: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                topStageView
+                if !interactionStageIsSelecting {
+                    liveStatusSection
+                        .transition(.popoverMacSectionZoom)
+                }
+
+                if showTodayTimeline && !interactionStageIsSelecting {
+                    historyTimeline
+                        .transition(.popoverMacSectionZoom)
+                }
+
+                if interactionStageIsSelecting {
+                    selectingPhase
+                }
+            }
+            .padding(.top, 4)
+        }
+        .animation(Motion.stage, value: interactionStageIsSelecting)
+        .animation(Motion.screen, value: showTodayTimeline)
     }
 
     private var settingsButton: some View {
@@ -133,21 +148,39 @@ struct PopoverContentView: View {
             case .idle:
                 idlePhase
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.94)),
-                        removal: .opacity.combined(with: .scale(scale: 1.04))
+                        insertion: .modifier(
+                            active: PopoverZoomModifier(opacity: 0, scale: 0.965, yOffset: 6),
+                            identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+                        ),
+                        removal: .modifier(
+                            active: PopoverZoomModifier(opacity: 0, scale: 0.985, yOffset: 3),
+                            identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+                        )
                     ))
             case .armingBurst(let payload), .confirming(let payload):
                 AnimatedPromptBurstView(payload: payload, theme: theme)
                     .id(payload.centerText + payload.particles.joined(separator: "|"))
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.88)),
-                        removal: .opacity.combined(with: .scale(scale: 1.05))
+                        insertion: .modifier(
+                            active: PopoverZoomModifier(opacity: 0, scale: 0.94, yOffset: 6),
+                            identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+                        ),
+                        removal: .modifier(
+                            active: PopoverZoomModifier(opacity: 0, scale: 1.025, yOffset: -2),
+                            identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+                        )
                     ))
             case .selecting:
                 selectingReadyPhase
                     .transition(.asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.92)),
-                        removal: .opacity.combined(with: .scale(scale: 0.96))
+                        insertion: .modifier(
+                            active: PopoverZoomModifier(opacity: 0, scale: 0.965, yOffset: 7),
+                            identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+                        ),
+                        removal: .modifier(
+                            active: PopoverZoomModifier(opacity: 0, scale: 0.985, yOffset: 3),
+                            identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+                        )
                     ))
             }
         }
@@ -170,7 +203,7 @@ struct PopoverContentView: View {
                     pulseScale: idlePulse ? 1.06 : 0.96
                 )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PopoverPressButtonStyle(pressedScale: 0.965))
 
             Spacer(minLength: 12)
         }
@@ -257,7 +290,7 @@ struct PopoverContentView: View {
             }
 
             Button {
-                withAnimation(.easeOut(duration: 0.18)) {
+                withAnimation(Motion.screen) {
                     showTodayTimeline.toggle()
                 }
             } label: {
@@ -274,7 +307,7 @@ struct PopoverContentView: View {
                             )
                     )
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PopoverPressButtonStyle())
         }
     }
 
@@ -284,8 +317,14 @@ struct PopoverContentView: View {
             utilityRow
         }
         .transition(.asymmetric(
-            insertion: .opacity.combined(with: .move(edge: .bottom)),
-            removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+            insertion: .modifier(
+                active: PopoverZoomModifier(opacity: 0, scale: 0.975, yOffset: 8),
+                identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            ),
+            removal: .modifier(
+                active: PopoverZoomModifier(opacity: 0, scale: 0.985, yOffset: 4),
+                identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            )
         ))
     }
 
@@ -321,7 +360,7 @@ struct PopoverContentView: View {
                             )
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PopoverPressButtonStyle())
                 .foregroundStyle(theme.stateText(on: state.colorHex, enabled: enabled, selected: selected))
                 .opacity(enabled || selected ? 1 : 0.92)
                 .disabled(!enabled)
@@ -343,7 +382,7 @@ struct PopoverContentView: View {
             HStack(spacing: 8) {
                 ForEach(RecordRangeScope.allCases) { scope in
                     Button {
-                        withAnimation(.easeOut(duration: 0.18)) {
+                        withAnimation(Motion.screen) {
                             historyScope = scope
                         }
                     } label: {
@@ -364,7 +403,7 @@ struct PopoverContentView: View {
                                     )
                             )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PopoverPressButtonStyle(pressedScale: 0.97))
                 }
 
                 Spacer(minLength: 0)
@@ -393,10 +432,12 @@ struct PopoverContentView: View {
                                             .stroke(theme.border.opacity(0.92), lineWidth: 1)
                                     )
                             )
+                            .transition(.popoverMacSectionZoom)
                     }
                 }
             }
         }
+        .animation(Motion.screen, value: historyScope)
     }
 
     private var timelineRecords: [RecordEvent] {
@@ -420,7 +461,7 @@ struct PopoverContentView: View {
                         )
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PopoverPressButtonStyle())
     }
 
     private func panelShell<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -539,13 +580,13 @@ struct PopoverContentView: View {
     }
 
     private func openSettingsWindow() {
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(Motion.screen) {
             showSettings = true
         }
     }
 
     private func closeSettings() {
-        withAnimation(.easeOut(duration: 0.18)) {
+        withAnimation(Motion.screen) {
             showSettings = false
         }
     }
@@ -562,7 +603,7 @@ struct PopoverContentView: View {
         store.undoLastRecord()
         if wasArmed {
             cancelPhaseTask()
-            withAnimation(.easeOut(duration: 0.18)) {
+            withAnimation(Motion.screen) {
                 interactionStage = .idle
             }
         }
@@ -655,4 +696,55 @@ struct PopoverContentView: View {
         formatter.timeZone = .current
         return formatter
     }()
+}
+
+private struct PopoverPressButtonStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.96
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .animation(.spring(response: 0.16, dampingFraction: 0.78), value: configuration.isPressed)
+    }
+}
+
+private struct PopoverZoomModifier: ViewModifier {
+    let opacity: Double
+    let scale: CGFloat
+    let yOffset: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(opacity)
+            .scaleEffect(scale, anchor: .top)
+            .offset(y: yOffset)
+    }
+}
+
+private extension AnyTransition {
+    static var popoverMacScreenZoom: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(
+                active: PopoverZoomModifier(opacity: 0, scale: 0.972, yOffset: 8),
+                identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            ),
+            removal: .modifier(
+                active: PopoverZoomModifier(opacity: 0, scale: 0.985, yOffset: 4),
+                identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            )
+        )
+    }
+
+    static var popoverMacSectionZoom: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(
+                active: PopoverZoomModifier(opacity: 0, scale: 0.985, yOffset: 6),
+                identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            ),
+            removal: .modifier(
+                active: PopoverZoomModifier(opacity: 0, scale: 0.99, yOffset: 3),
+                identity: PopoverZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            )
+        )
+    }
 }
