@@ -1,7 +1,27 @@
+import AppKit
+import QuartzCore
 import SwiftUI
+
+@MainActor
+final class BeaconInteractionState: ObservableObject {
+    @Published private(set) var proximity: CGFloat = 0
+
+    private let publishThreshold: CGFloat = 0.006
+
+    func setProximity(_ value: CGFloat) {
+        let next = min(max(value, 0), 1)
+        let reachesBoundary = (next == 0 && proximity != 0) || (next == 1 && proximity != 1)
+        guard reachesBoundary || abs(next - proximity) >= publishThreshold else {
+            return
+        }
+
+        proximity = next
+    }
+}
 
 struct FloatingBeaconView: View {
     @EnvironmentObject private var store: RecordStore
+    @ObservedObject var beaconState: BeaconInteractionState
 
     private let panelSize: CGFloat = 74
     private let coreSize: CGFloat = 32
@@ -9,10 +29,7 @@ struct FloatingBeaconView: View {
     private let ringEndSize: CGFloat = 36
 
     private var theme: AppTheme { store.theme }
-    private var proximity: CGFloat { min(max(store.beaconProximity, 0), 1) }
-    private var hasActiveCountdown: Bool {
-        store.automationSettings.autoSwitch.countdownStyle != .off && store.autoSwitchCandidate != nil
-    }
+    private var proximity: CGFloat { beaconState.proximity }
 
     private var stateColor: Color {
         if let hex = store.currentStateDefinition?.colorHex {
@@ -22,14 +39,14 @@ struct FloatingBeaconView: View {
     }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: proximity < 0.12 && !hasActiveCountdown)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 45.0, paused: proximity < 0.12)) { context in
             let time = context.date.timeIntervalSinceReferenceDate
             let countdownProgress = autoSwitchCountdownProgress(at: context.date)
             let countdownStyle = store.automationSettings.autoSwitch.countdownStyle
 
             ZStack {
                 rippleField(time: time)
-                beaconCore(fillProgress: countdownStyle == .fill ? countdownProgress : nil)
+                beaconCore()
                 countdownProgressIndicator(style: countdownStyle, progress: countdownProgress)
             }
             .frame(width: panelSize, height: panelSize)
@@ -47,7 +64,7 @@ struct FloatingBeaconView: View {
         }
     }
 
-    private func beaconCore(fillProgress: CGFloat?) -> some View {
+    private func beaconCore() -> some View {
         let shellFill = theme.surface.mixed(with: theme.chrome, amount: 0.78)
         let innerTint = theme.surface.mixed(with: theme.panel, amount: 0.86)
         let shellStroke = theme.border.mixed(with: theme.surface, amount: 0.48)
@@ -81,10 +98,6 @@ struct FloatingBeaconView: View {
                         .padding(0.5)
                 }
                 .shadow(color: theme.ink.opacity(0.10 + proximity * 0.08), radius: 12 + proximity * 6, y: 6)
-
-            if let fillProgress {
-                countdownFill(progress: fillProgress)
-            }
 
             AccentControlView(
                 theme: theme,
@@ -154,79 +167,811 @@ struct FloatingBeaconView: View {
 
     @ViewBuilder
     private func countdownProgressIndicator(style: AutoSwitchCountdownStyle, progress: CGFloat?) -> some View {
-        if let progress {
+        if progress != nil {
             switch style {
             case .bar:
-                countdownBar(progress: progress)
+                if let candidate = store.autoSwitchCandidate {
+                    SmoothCountdownBarView(
+                        candidate: candidate,
+                        settleSeconds: store.automationSettings.autoSwitch.settleSeconds,
+                        theme: theme
+                    )
+                }
             case .ring:
-                countdownRing(progress: progress)
-            case .fill, .off:
+                if let candidate = store.autoSwitchCandidate {
+                    SmoothCountdownRingView(
+                        candidate: candidate,
+                        settleSeconds: store.automationSettings.autoSwitch.settleSeconds,
+                        theme: theme
+                    )
+                }
+            case .fill:
+                if let candidate = store.autoSwitchCandidate {
+                    SmoothCountdownFillView(
+                        candidate: candidate,
+                        settleSeconds: store.automationSettings.autoSwitch.settleSeconds,
+                        theme: theme,
+                        size: coreSize
+                    )
+                }
+            case .off:
                 EmptyView()
             }
         }
     }
 
-    private func countdownBar(progress: CGFloat) -> some View {
-        ZStack(alignment: .leading) {
-            Capsule(style: .continuous)
-                .fill(theme.ink.opacity(0.08))
+}
 
-            Capsule(style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [theme.accentSecondary.opacity(0.72), theme.accentPrimary.opacity(0.92)],
-                        startPoint: .leading,
-                        endPoint: .trailing
-                    )
-                )
-                .frame(width: max(3, 34 * progress))
-        }
+private struct SmoothCountdownBarView: View {
+    let candidate: AutoSwitchCandidate
+    let settleSeconds: Int
+    let theme: AppTheme
+
+    var body: some View {
+        LayerBackedCountdownBar(
+            candidateID: candidate.id,
+            firstSeenAt: candidate.firstSeenAt,
+            settleSeconds: settleSeconds,
+            trackHex: theme.palette.inkHex,
+            accentStartHex: theme.palette.accentSecondaryHex,
+            accentEndHex: theme.palette.accentPrimaryHex
+        )
         .frame(width: 34, height: 3.5)
         .offset(y: 24)
-        .shadow(color: theme.accentPrimary.opacity(0.18), radius: 4, y: 1)
     }
+}
 
-    private func countdownRing(progress: CGFloat) -> some View {
-        ZStack {
-            Circle()
-                .stroke(theme.ink.opacity(0.08), lineWidth: 2)
+private struct SmoothCountdownFillView: View {
+    let candidate: AutoSwitchCandidate
+    let settleSeconds: Int
+    let theme: AppTheme
+    let size: CGFloat
 
-            Circle()
-                .trim(from: 0, to: progress)
-                .stroke(
-                    LinearGradient(
-                        colors: [theme.accentSecondary, theme.accentPrimary],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-        }
-        .frame(width: 44, height: 44)
-        .shadow(color: theme.accentPrimary.opacity(0.16), radius: 5, y: 1)
-    }
-
-    private func countdownFill(progress: CGFloat) -> some View {
-        ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(theme.ink.opacity(0.13))
-
-            Rectangle()
-                .fill(
-                    LinearGradient(
-                        colors: [theme.accentSecondary.opacity(0.52), theme.accentPrimary.opacity(0.64)],
-                        startPoint: .bottom,
-                        endPoint: .top
-                    )
-                )
-                .frame(height: coreSize * progress)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .frame(width: coreSize, height: coreSize)
+    var body: some View {
+        LayerBackedWaveFill(
+            candidateID: candidate.id,
+            firstSeenAt: candidate.firstSeenAt,
+            settleSeconds: settleSeconds,
+            backgroundHex: theme.palette.inkHex,
+            accentStartHex: theme.palette.accentSecondaryHex,
+            accentEndHex: theme.palette.accentPrimaryHex,
+            size: size
+        )
+        .frame(width: size, height: size)
         .allowsHitTesting(false)
     }
+}
 
+private struct SmoothCountdownRingView: View {
+    let candidate: AutoSwitchCandidate
+    let settleSeconds: Int
+    let theme: AppTheme
+
+    var body: some View {
+        LayerBackedCountdownRing(
+            candidateID: candidate.id,
+            firstSeenAt: candidate.firstSeenAt,
+            settleSeconds: settleSeconds,
+            trackHex: theme.palette.inkHex,
+            accentStartHex: theme.palette.accentSecondaryHex,
+            accentEndHex: theme.palette.accentPrimaryHex
+        )
+        .frame(width: 44, height: 44)
+    }
+}
+
+private struct LayerBackedCountdownRing: NSViewRepresentable {
+    let candidateID: String
+    let firstSeenAt: Date
+    let settleSeconds: Int
+    let trackHex: String
+    let accentStartHex: String
+    let accentEndHex: String
+
+    func makeNSView(context: Context) -> CountdownRingLayerView {
+        CountdownRingLayerView()
+    }
+
+    func updateNSView(_ nsView: CountdownRingLayerView, context: Context) {
+        nsView.configure(
+            candidateID: candidateID,
+            firstSeenAt: firstSeenAt,
+            settleSeconds: settleSeconds,
+            trackColor: NSColor(hex: trackHex) ?? .black,
+            accentStart: NSColor(hex: accentStartHex) ?? .systemTeal,
+            accentEnd: NSColor(hex: accentEndHex) ?? .systemOrange
+        )
+    }
+}
+
+private struct LayerBackedCountdownBar: NSViewRepresentable {
+    let candidateID: String
+    let firstSeenAt: Date
+    let settleSeconds: Int
+    let trackHex: String
+    let accentStartHex: String
+    let accentEndHex: String
+
+    func makeNSView(context: Context) -> CountdownBarLayerView {
+        CountdownBarLayerView()
+    }
+
+    func updateNSView(_ nsView: CountdownBarLayerView, context: Context) {
+        nsView.configure(
+            candidateID: candidateID,
+            firstSeenAt: firstSeenAt,
+            settleSeconds: settleSeconds,
+            trackColor: NSColor(hex: trackHex) ?? .black,
+            accentStart: NSColor(hex: accentStartHex) ?? .systemTeal,
+            accentEnd: NSColor(hex: accentEndHex) ?? .systemOrange
+        )
+    }
+}
+
+private struct LayerBackedWaveFill: NSViewRepresentable {
+    let candidateID: String
+    let firstSeenAt: Date
+    let settleSeconds: Int
+    let backgroundHex: String
+    let accentStartHex: String
+    let accentEndHex: String
+    let size: CGFloat
+
+    func makeNSView(context: Context) -> WaveFillLayerView {
+        WaveFillLayerView()
+    }
+
+    func updateNSView(_ nsView: WaveFillLayerView, context: Context) {
+        nsView.configure(
+            candidateID: candidateID,
+            firstSeenAt: firstSeenAt,
+            settleSeconds: settleSeconds,
+            backgroundColor: NSColor(hex: backgroundHex) ?? .black,
+            accentStart: NSColor(hex: accentStartHex) ?? .systemTeal,
+            accentEnd: NSColor(hex: accentEndHex) ?? .systemOrange
+        )
+    }
+}
+
+@MainActor
+private final class CountdownRingLayerView: NSView {
+    private let trackLayer = CAShapeLayer()
+    private let gradientLayer = CAGradientLayer()
+    private let progressMaskLayer = CAShapeLayer()
+    private var animationKey = ""
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupLayers()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayers()
+    }
+
+    override func layout() {
+        super.layout()
+        updatePaths()
+    }
+
+    func configure(
+        candidateID: String,
+        firstSeenAt: Date,
+        settleSeconds: Int,
+        trackColor: NSColor,
+        accentStart: NSColor,
+        accentEnd: NSColor
+    ) {
+        trackLayer.strokeColor = trackColor.withAlphaComponent(0.08).cgColor
+        gradientLayer.colors = [
+            accentStart.cgColor,
+            accentEnd.cgColor
+        ]
+        updatePaths()
+
+        let nextAnimationKey = "\(candidateID)|\(settleSeconds)"
+        guard nextAnimationKey != animationKey else {
+            return
+        }
+
+        animationKey = nextAnimationKey
+        animateStroke(firstSeenAt: firstSeenAt, settleSeconds: settleSeconds)
+    }
+
+    private func setupLayers() {
+        wantsLayer = true
+        layer = CALayer()
+        layer?.masksToBounds = false
+
+        trackLayer.fillColor = NSColor.clear.cgColor
+        trackLayer.lineWidth = 2
+        trackLayer.lineCap = .round
+
+        progressMaskLayer.fillColor = NSColor.clear.cgColor
+        progressMaskLayer.strokeColor = NSColor.black.cgColor
+        progressMaskLayer.lineWidth = 2.2
+        progressMaskLayer.lineCap = .round
+        progressMaskLayer.strokeEnd = 0
+
+        gradientLayer.startPoint = CGPoint(x: 0.15, y: 0)
+        gradientLayer.endPoint = CGPoint(x: 0.85, y: 1)
+        gradientLayer.mask = progressMaskLayer
+        gradientLayer.shadowColor = NSColor(hex: "#3caed7")?.cgColor ?? NSColor.systemBlue.cgColor
+        gradientLayer.shadowOpacity = 0.16
+        gradientLayer.shadowRadius = 5
+        gradientLayer.shadowOffset = CGSize(width: 0, height: -1)
+
+        layer?.addSublayer(trackLayer)
+        layer?.addSublayer(gradientLayer)
+    }
+
+    private func updatePaths() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        layer?.contentsScale = scale
+        trackLayer.contentsScale = scale
+        gradientLayer.contentsScale = scale
+        progressMaskLayer.contentsScale = scale
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        let lineWidth: CGFloat = 2.2
+        let radius = max(0, min(bounds.width, bounds.height) / 2 - lineWidth / 2 - 0.5)
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let path = CGMutablePath()
+        path.addArc(
+            center: center,
+            radius: radius,
+            startAngle: -.pi / 2,
+            endAngle: .pi * 1.5,
+            clockwise: false
+        )
+
+        trackLayer.frame = bounds
+        trackLayer.path = path
+        gradientLayer.frame = bounds
+        progressMaskLayer.frame = bounds
+        progressMaskLayer.path = path
+
+        CATransaction.commit()
+    }
+
+    private func animateStroke(firstSeenAt: Date, settleSeconds: Int) {
+        let total = max(Double(settleSeconds), 0.001)
+        let elapsed = max(0, Date().timeIntervalSince(firstSeenAt))
+        let currentProgress = min(max(CGFloat(elapsed / total), 0), 1)
+        let remaining = max(0, total - elapsed)
+
+        progressMaskLayer.removeAnimation(forKey: "strokeEnd")
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        progressMaskLayer.strokeEnd = currentProgress
+        CATransaction.commit()
+
+        guard remaining > 0.02, currentProgress < 1 else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            progressMaskLayer.strokeEnd = 1
+            CATransaction.commit()
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        progressMaskLayer.strokeEnd = 1
+        CATransaction.commit()
+
+        let animation = CABasicAnimation(keyPath: "strokeEnd")
+        animation.fromValue = currentProgress
+        animation.toValue = 1
+        animation.duration = remaining
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        progressMaskLayer.add(animation, forKey: "strokeEnd")
+    }
+}
+
+@MainActor
+private final class CountdownBarLayerView: NSView {
+    private let trackLayer = CALayer()
+    private let gradientLayer = CAGradientLayer()
+    private let progressLayer = CALayer()
+    private var animationKey = ""
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupLayers()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayers()
+    }
+
+    override func layout() {
+        super.layout()
+        updateFrames()
+    }
+
+    func configure(
+        candidateID: String,
+        firstSeenAt: Date,
+        settleSeconds: Int,
+        trackColor: NSColor,
+        accentStart: NSColor,
+        accentEnd: NSColor
+    ) {
+        trackLayer.backgroundColor = trackColor.withAlphaComponent(0.08).cgColor
+        gradientLayer.colors = [
+            accentStart.withAlphaComponent(0.72).cgColor,
+            accentEnd.withAlphaComponent(0.92).cgColor
+        ]
+        gradientLayer.shadowColor = accentEnd.cgColor
+        updateFrames()
+
+        let nextAnimationKey = "\(candidateID)|\(settleSeconds)"
+        guard nextAnimationKey != animationKey else {
+            return
+        }
+
+        animationKey = nextAnimationKey
+        animateWidth(firstSeenAt: firstSeenAt, settleSeconds: settleSeconds)
+    }
+
+    private func setupLayers() {
+        wantsLayer = true
+        layer = CALayer()
+        layer?.masksToBounds = false
+
+        trackLayer.masksToBounds = true
+        trackLayer.cornerCurve = .continuous
+
+        progressLayer.masksToBounds = true
+        progressLayer.cornerCurve = .continuous
+
+        gradientLayer.startPoint = CGPoint(x: 0, y: 0.5)
+        gradientLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        gradientLayer.shadowOpacity = 0.18
+        gradientLayer.shadowRadius = 4
+        gradientLayer.shadowOffset = CGSize(width: 0, height: -1)
+
+        progressLayer.addSublayer(gradientLayer)
+        layer?.addSublayer(trackLayer)
+        layer?.addSublayer(progressLayer)
+    }
+
+    private func updateFrames() {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        layer?.contentsScale = scale
+        trackLayer.contentsScale = scale
+        progressLayer.contentsScale = scale
+        gradientLayer.contentsScale = scale
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        let cornerRadius = bounds.height / 2
+        trackLayer.frame = bounds
+        trackLayer.cornerRadius = cornerRadius
+        progressLayer.cornerRadius = cornerRadius
+        gradientLayer.frame = CGRect(origin: .zero, size: bounds.size)
+
+        CATransaction.commit()
+    }
+
+    private func animateWidth(firstSeenAt: Date, settleSeconds: Int) {
+        let total = max(Double(settleSeconds), 0.001)
+        let elapsed = max(0, Date().timeIntervalSince(firstSeenAt))
+        let currentProgress = min(max(CGFloat(elapsed / total), 0), 1)
+        let remaining = max(0, total - elapsed)
+        let currentWidth = max(3, bounds.width * currentProgress)
+        let targetWidth = bounds.width
+
+        progressLayer.removeAnimation(forKey: "bounds.size.width")
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        progressLayer.frame = CGRect(x: 0, y: 0, width: currentWidth, height: bounds.height)
+        CATransaction.commit()
+
+        guard remaining > 0.02, currentProgress < 1 else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            progressLayer.frame = bounds
+            CATransaction.commit()
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        progressLayer.frame = bounds
+        CATransaction.commit()
+
+        let animation = CABasicAnimation(keyPath: "bounds.size.width")
+        animation.fromValue = currentWidth
+        animation.toValue = targetWidth
+        animation.duration = remaining
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        progressLayer.add(animation, forKey: "bounds.size.width")
+    }
+}
+
+@MainActor
+private final class WaveFillLayerView: NSView {
+    private struct WaveProfile {
+        let amplitudeScale: CGFloat
+        let wavelengthScale: CGFloat
+        let primaryWeight: CGFloat
+        let secondaryWeight: CGFloat
+        let secondaryPhase: CGFloat
+        let secondaryFrequencyScale: CGFloat
+        let driftDuration: CFTimeInterval
+
+        static let fallback = WaveProfile(
+            amplitudeScale: 1,
+            wavelengthScale: 1,
+            primaryWeight: 0.68,
+            secondaryWeight: 0.22,
+            secondaryPhase: 0.9,
+            secondaryFrequencyScale: 2,
+            driftDuration: 1.9
+        )
+    }
+
+    private struct WaveMetrics {
+        let amplitude: CGFloat
+        let wavelength: CGFloat
+        let shapeWidth: CGFloat
+        let shapeHeight: CGFloat
+        let primaryWeight: CGFloat
+        let secondaryWeight: CGFloat
+        let secondaryPhase: CGFloat
+        let secondaryFrequencyScale: CGFloat
+    }
+
+    private enum AnimationKey {
+        static let fillRise = "fillRise"
+        static let waveDrift = "waveDrift"
+    }
+
+    private let backgroundLayer = CAShapeLayer()
+    private let gradientLayer = CAGradientLayer()
+    private let waveMaskLayer = CAShapeLayer()
+    private let highlightLayer = CAShapeLayer()
+    private var requestedAnimationKey = ""
+    private var activeAnimationKey = ""
+    private var firstSeenAt = Date()
+    private var settleSeconds = 1
+    private var waveProfile = WaveProfile.fallback
+    private var waveDriftWavelength: CGFloat = 0
+
+    override var isFlipped: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupLayers()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayers()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            stopLayerAnimations()
+        } else {
+            updateLayerGeometry()
+            restartFillAnimationIfNeeded()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        updateLayerGeometry()
+        restartFillAnimationIfNeeded()
+    }
+
+    func configure(
+        candidateID: String,
+        firstSeenAt: Date,
+        settleSeconds: Int,
+        backgroundColor: NSColor,
+        accentStart: NSColor,
+        accentEnd: NSColor
+    ) {
+        self.firstSeenAt = firstSeenAt
+        self.settleSeconds = max(settleSeconds, 1)
+        let nextAnimationKey = "\(candidateID)|\(settleSeconds)|\(firstSeenAt.timeIntervalSinceReferenceDate)"
+        if nextAnimationKey != requestedAnimationKey {
+            requestedAnimationKey = nextAnimationKey
+            waveProfile = makeWaveProfile(for: nextAnimationKey)
+        } else {
+            requestedAnimationKey = nextAnimationKey
+        }
+        backgroundLayer.fillColor = backgroundColor.withAlphaComponent(0.13).cgColor
+        gradientLayer.colors = [
+            accentStart.withAlphaComponent(0.52).cgColor,
+            accentEnd.withAlphaComponent(0.66).cgColor
+        ]
+        highlightLayer.strokeColor = NSColor.white.withAlphaComponent(0.38).cgColor
+        updateLayerGeometry()
+        restartFillAnimationIfNeeded()
+    }
+
+    private func setupLayers() {
+        wantsLayer = true
+        layer = CALayer()
+        layer?.masksToBounds = true
+        layer?.cornerRadius = 10
+        layer?.cornerCurve = .continuous
+
+        backgroundLayer.fillColor = NSColor.black.withAlphaComponent(0.13).cgColor
+
+        gradientLayer.startPoint = CGPoint(x: 0.5, y: 1)
+        gradientLayer.endPoint = CGPoint(x: 0.5, y: 0)
+        gradientLayer.mask = waveMaskLayer
+
+        waveMaskLayer.fillColor = NSColor.black.cgColor
+        waveMaskLayer.anchorPoint = CGPoint(x: 0, y: 0)
+
+        highlightLayer.fillColor = NSColor.clear.cgColor
+        highlightLayer.lineWidth = 1
+        highlightLayer.lineCap = .round
+        highlightLayer.lineJoin = .round
+        highlightLayer.opacity = 0.82
+        highlightLayer.anchorPoint = CGPoint(x: 0, y: 0)
+
+        layer?.addSublayer(backgroundLayer)
+        layer?.addSublayer(gradientLayer)
+        layer?.addSublayer(highlightLayer)
+    }
+
+    private func currentProgress() -> CGFloat {
+        let total = max(Double(settleSeconds), 0.001)
+        let elapsed = max(0, Date().timeIntervalSince(firstSeenAt))
+        return min(max(CGFloat(elapsed / total), 0), 1)
+    }
+
+    private func remainingDuration() -> CFTimeInterval {
+        let total = max(Double(settleSeconds), 0.001)
+        let elapsed = max(0, Date().timeIntervalSince(firstSeenAt))
+        return max(0, total - elapsed)
+    }
+
+    private func currentMetrics() -> WaveMetrics? {
+        guard bounds.width > 0, bounds.height > 0 else {
+            return nil
+        }
+
+        let baseAmplitude = min(2.7, max(1.8, bounds.height * 0.08))
+        let amplitude = min(3.1, max(1.6, baseAmplitude * waveProfile.amplitudeScale))
+        let wavelength = max(bounds.width * 0.9 * waveProfile.wavelengthScale, 18)
+        return WaveMetrics(
+            amplitude: amplitude,
+            wavelength: wavelength,
+            shapeWidth: bounds.width + wavelength * 2,
+            shapeHeight: bounds.height + amplitude * 3,
+            primaryWeight: waveProfile.primaryWeight,
+            secondaryWeight: waveProfile.secondaryWeight,
+            secondaryPhase: waveProfile.secondaryPhase,
+            secondaryFrequencyScale: waveProfile.secondaryFrequencyScale
+        )
+    }
+
+    private func updateLayerGeometry() {
+        guard let metrics = currentMetrics() else {
+            return
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        layer?.contentsScale = scale
+        backgroundLayer.contentsScale = scale
+        gradientLayer.contentsScale = scale
+        waveMaskLayer.contentsScale = scale
+        highlightLayer.contentsScale = scale
+
+        layer?.frame = bounds
+        backgroundLayer.frame = bounds
+        gradientLayer.frame = bounds
+        waveMaskLayer.bounds = CGRect(
+            origin: .zero,
+            size: CGSize(width: metrics.shapeWidth, height: metrics.shapeHeight)
+        )
+        highlightLayer.bounds = waveMaskLayer.bounds
+
+        let roundedPath = CGPath(
+            roundedRect: bounds,
+            cornerWidth: 10,
+            cornerHeight: 10,
+            transform: nil
+        )
+        backgroundLayer.path = roundedPath
+
+        let paths = makeWavePaths(metrics: metrics)
+        waveMaskLayer.path = paths.fill
+        highlightLayer.path = paths.highlight
+
+        if activeAnimationKey.isEmpty {
+            let originY = waveOriginY(for: currentProgress(), amplitude: metrics.amplitude)
+            waveMaskLayer.position = CGPoint(x: 0, y: originY)
+            highlightLayer.position = CGPoint(x: 0, y: originY)
+        }
+
+        CATransaction.commit()
+    }
+
+    private func makeWavePaths(metrics: WaveMetrics) -> (fill: CGPath, highlight: CGPath) {
+        let centerY = metrics.amplitude
+        let step = max(1.4, metrics.wavelength / 18)
+
+        let fillPath = CGMutablePath()
+        fillPath.move(to: CGPoint(x: 0, y: metrics.shapeHeight))
+        fillPath.addLine(to: CGPoint(x: 0, y: centerY))
+
+        let highlightPath = CGMutablePath()
+        var didMove = false
+        var x: CGFloat = 0
+        while x <= metrics.shapeWidth + step {
+            let y = waveY(at: x, metrics: metrics, centerY: centerY)
+            let point = CGPoint(x: x, y: y)
+            fillPath.addLine(to: point)
+            if didMove {
+                highlightPath.addLine(to: point)
+            } else {
+                highlightPath.move(to: point)
+                didMove = true
+            }
+            x += step
+        }
+
+        fillPath.addLine(to: CGPoint(x: metrics.shapeWidth, y: metrics.shapeHeight))
+        fillPath.closeSubpath()
+
+        return (fillPath, highlightPath)
+    }
+
+    private func waveY(at x: CGFloat, metrics: WaveMetrics, centerY: CGFloat) -> CGFloat {
+        let phase = x / metrics.wavelength * .pi * 2
+        let primary = sin(phase) * metrics.primaryWeight
+        let secondary = sin(phase * metrics.secondaryFrequencyScale + metrics.secondaryPhase) * metrics.secondaryWeight
+        return centerY + metrics.amplitude * (primary + secondary)
+    }
+
+    private func waveOriginY(for progress: CGFloat, amplitude: CGFloat) -> CGFloat {
+        bounds.height * (1 - progress) - amplitude
+    }
+
+    private func restartFillAnimationIfNeeded() {
+        guard !requestedAnimationKey.isEmpty,
+              requestedAnimationKey != activeAnimationKey,
+              let metrics = currentMetrics() else {
+            startWaveDriftIfNeeded()
+            return
+        }
+
+        waveMaskLayer.removeAnimation(forKey: AnimationKey.fillRise)
+        highlightLayer.removeAnimation(forKey: AnimationKey.fillRise)
+
+        let progress = currentProgress()
+        let startY = waveOriginY(for: progress, amplitude: metrics.amplitude)
+        let endY = waveOriginY(for: 1, amplitude: metrics.amplitude)
+        let remaining = remainingDuration()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        waveMaskLayer.position = CGPoint(x: 0, y: endY)
+        highlightLayer.position = CGPoint(x: 0, y: endY)
+        CATransaction.commit()
+
+        if remaining > 0.02, progress < 1 {
+            addFillAnimation(from: startY, to: endY, duration: remaining, layer: waveMaskLayer)
+            addFillAnimation(from: startY, to: endY, duration: remaining, layer: highlightLayer)
+            startWaveDriftIfNeeded()
+        } else {
+            stopWaveDrift()
+        }
+
+        activeAnimationKey = requestedAnimationKey
+    }
+
+    private func addFillAnimation(from startY: CGFloat, to endY: CGFloat, duration: CFTimeInterval, layer: CALayer) {
+        let animation = CABasicAnimation(keyPath: "position.y")
+        animation.fromValue = startY
+        animation.toValue = endY
+        animation.duration = duration
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        layer.add(animation, forKey: AnimationKey.fillRise)
+    }
+
+    private func startWaveDriftIfNeeded() {
+        guard !requestedAnimationKey.isEmpty,
+              let metrics = currentMetrics(),
+              currentProgress() < 1 else {
+            stopWaveDrift()
+            return
+        }
+
+        guard waveMaskLayer.animation(forKey: AnimationKey.waveDrift) == nil
+                || abs(waveDriftWavelength - metrics.wavelength) > 0.5 else {
+            return
+        }
+
+        stopWaveDrift()
+        waveMaskLayer.add(waveDriftAnimation(wavelength: metrics.wavelength), forKey: AnimationKey.waveDrift)
+        highlightLayer.add(waveDriftAnimation(wavelength: metrics.wavelength), forKey: AnimationKey.waveDrift)
+        waveDriftWavelength = metrics.wavelength
+    }
+
+    private func waveDriftAnimation(wavelength: CGFloat) -> CABasicAnimation {
+        let animation = CABasicAnimation(keyPath: "transform.translation.x")
+        animation.fromValue = 0
+        animation.toValue = -wavelength
+        animation.duration = waveProfile.driftDuration
+        animation.repeatCount = .infinity
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        return animation
+    }
+
+    // Keep each countdown visually unique without reintroducing per-frame randomness.
+    private func makeWaveProfile(for key: String) -> WaveProfile {
+        let seed = stableWaveSeed(for: key)
+        return WaveProfile(
+            amplitudeScale: sampleNoise(seed: seed, stream: 0, range: 0.9...1.12),
+            wavelengthScale: sampleNoise(seed: seed, stream: 1, range: 0.84...1.06),
+            primaryWeight: sampleNoise(seed: seed, stream: 2, range: 0.62...0.74),
+            secondaryWeight: sampleNoise(seed: seed, stream: 3, range: 0.18...0.30),
+            secondaryPhase: sampleNoise(seed: seed, stream: 4, range: 0.35...1.45),
+            secondaryFrequencyScale: sampleNoise(seed: seed, stream: 5, range: 1.7...2.35),
+            driftDuration: sampleNoise(seed: seed, stream: 6, range: 1.7...2.3)
+        )
+    }
+
+    private func stableWaveSeed(for key: String) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        for byte in key.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1099511628211
+        }
+        return hash
+    }
+
+    private func sampleNoise(seed: UInt64, stream: UInt64, range: ClosedRange<CGFloat>) -> CGFloat {
+        let unit = normalizedNoise(seed: seed, stream: stream)
+        return range.lowerBound + (range.upperBound - range.lowerBound) * unit
+    }
+
+    private func sampleNoise(seed: UInt64, stream: UInt64, range: ClosedRange<CFTimeInterval>) -> CFTimeInterval {
+        let unit = CFTimeInterval(normalizedNoise(seed: seed, stream: stream))
+        return range.lowerBound + (range.upperBound - range.lowerBound) * unit
+    }
+
+    private func normalizedNoise(seed: UInt64, stream: UInt64) -> CGFloat {
+        var value = seed &+ 0x9E3779B97F4A7C15 &* (stream &+ 1)
+        value = (value ^ (value >> 30)) &* 0xBF58476D1CE4E5B9
+        value = (value ^ (value >> 27)) &* 0x94D049BB133111EB
+        value ^= value >> 31
+        let masked = value & 0x0000FFFFFFFFFFFF
+        return CGFloat(Double(masked) / Double(0x0000FFFFFFFFFFFF))
+    }
+
+    private func stopWaveDrift() {
+        waveMaskLayer.removeAnimation(forKey: AnimationKey.waveDrift)
+        highlightLayer.removeAnimation(forKey: AnimationKey.waveDrift)
+        waveDriftWavelength = 0
+    }
+
+    private func stopLayerAnimations() {
+        waveMaskLayer.removeAnimation(forKey: AnimationKey.fillRise)
+        highlightLayer.removeAnimation(forKey: AnimationKey.fillRise)
+        stopWaveDrift()
+        activeAnimationKey = ""
+    }
 }
 
 struct AutoSwitchFeedbackBubbleView: View {

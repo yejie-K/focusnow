@@ -14,16 +14,27 @@ struct SettingsView: View {
         static let iconButtonSize: CGFloat = 28
     }
 
+    private enum Motion {
+        static let tabSwitch = Animation.spring(response: 0.24, dampingFraction: 0.88, blendDuration: 0.04)
+    }
+
     enum Presentation {
         case window
         case embedded
     }
 
-    enum Page: String, CaseIterable, Identifiable {
-        case remind = "Remind"
-        case auto = "Auto"
-        case color = "color"
+    enum Mode: String, CaseIterable, Identifiable {
+        case settings = "设置"
+        case data = "Data"
+
+        var id: String { rawValue }
+    }
+
+    enum SettingsSection: String, CaseIterable, Identifiable {
         case add = "Add"
+        case auto = "Auto"
+        case remind = "Remind"
+        case color = "Color"
 
         var id: String { rawValue }
     }
@@ -32,8 +43,10 @@ struct SettingsView: View {
     @State private var editingStateCode: String?
     @State private var editingStateName = ""
     @State private var pendingDeleteState: StateDefinition?
-    @State private var activePage: Page = .remind
+    @State private var activeMode: Mode = .settings
+    @State private var activeSection: SettingsSection = .add
     @State private var activeAutoFeedbackPreview: AutoFeedbackPreviewKind?
+    @Namespace private var pageSwitcherNamespace
     let presentation: Presentation
 
     private var theme: AppTheme { store.theme }
@@ -46,8 +59,10 @@ struct SettingsView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
                 header
-                pageSwitcher
-                activePageView
+                if activeMode == .settings {
+                    sectionSwitcher
+                }
+                animatedContentView
             }
             .padding(presentation == .window ? 22 : 0)
         }
@@ -94,9 +109,7 @@ struct SettingsView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Text("设置")
-                .font(.system(size: presentation == .window ? 26 : 22, weight: .bold))
-                .foregroundStyle(theme.ink)
+            modeSwitcher
 
             Spacer(minLength: 0)
 
@@ -108,49 +121,141 @@ struct SettingsView: View {
         }
     }
 
-    private var pageSwitcher: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Page.allCases) { page in
-                    Button {
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            activePage = page
-                        }
-                    } label: {
-                        Text(page.rawValue)
-                            .font(.system(size: 12.5, weight: .semibold))
-                            .foregroundStyle(activePage == page ? theme.ink : theme.textMuted)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                            .background(
-                                Capsule(style: .continuous)
-                                    .fill(activePage == page ? theme.accentSoft.opacity(0.28) : theme.surface)
-                                    .overlay(
-                                        Capsule(style: .continuous)
-                                            .stroke(
-                                                activePage == page ? theme.accentPrimary.opacity(0.52) : theme.border.opacity(0.92),
-                                                lineWidth: 1
-                                            )
-                                    )
-                            )
-                    }
-                    .buttonStyle(.plain)
+    private var modeSwitcher: some View {
+        HStack(spacing: 8) {
+            modeButton(.settings)
+
+            Text("|")
+                .font(.system(size: presentation == .window ? 22 : 18, weight: .semibold))
+                .foregroundStyle(theme.border.opacity(0.9))
+
+            modeButton(.data)
+        }
+    }
+
+    private func modeButton(_ mode: Mode) -> some View {
+        let isSelected = activeMode == mode
+
+        return Button {
+            selectMode(mode)
+        } label: {
+            Text(mode.rawValue)
+                .font(.system(size: presentation == .window ? 26 : 22, weight: .bold))
+                .foregroundStyle(isSelected ? theme.ink : theme.textDim)
+                .opacity(isSelected ? 1 : 0.62)
+                .scaleEffect(isSelected ? 1 : 0.98, anchor: .leading)
+                .animation(Motion.tabSwitch, value: isSelected)
+        }
+        .buttonStyle(SettingsPageTabButtonStyle(pressedScale: 0.975))
+    }
+
+    private var sectionSwitcher: some View {
+        HStack(spacing: 0) {
+            ForEach(SettingsSection.allCases) { section in
+                Button {
+                    selectSection(section)
+                } label: {
+                    sectionSwitcherLabel(for: section)
+                }
+                .buttonStyle(SettingsPageTabButtonStyle())
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(theme.surface.opacity(0.96))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.border.opacity(0.92), lineWidth: 1)
+                )
+        )
+    }
+
+    private func selectMode(_ mode: Mode) {
+        guard activeMode != mode else {
+            return
+        }
+
+        withAnimation(Motion.tabSwitch) {
+            activeMode = mode
+        }
+    }
+
+    private func selectSection(_ section: SettingsSection) {
+        guard activeSection != section else {
+            return
+        }
+
+        withAnimation(Motion.tabSwitch) {
+            activeSection = section
+        }
+    }
+
+    private func sectionSwitcherLabel(for section: SettingsSection) -> some View {
+        let isSelected = activeSection == section
+
+        return Text(section.rawValue)
+            .font(.system(size: 12.5, weight: .semibold))
+            .foregroundStyle(isSelected ? theme.ink : theme.textMuted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(theme.accentSoft.opacity(0.28))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .stroke(theme.accentPrimary.opacity(0.52), lineWidth: 1)
+                        )
+                        .matchedGeometryEffect(id: "settings-section-selection", in: pageSwitcherNamespace)
                 }
             }
+            .contentShape(Rectangle())
+            .scaleEffect(isSelected ? 1 : 0.985)
+            .animation(Motion.tabSwitch, value: isSelected)
+    }
+
+    private var animatedContentView: some View {
+        ZStack(alignment: .topLeading) {
+            activeContentView
+                .id(activeContentID)
+                .transition(.settingsMacTabZoom)
+        }
+        .animation(Motion.tabSwitch, value: activeContentID)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var activeContentID: String {
+        switch activeMode {
+        case .settings:
+            return "\(activeMode.id)|\(activeSection.id)"
+        case .data:
+            return activeMode.id
         }
     }
 
     @ViewBuilder
-    private var activePageView: some View {
-        switch activePage {
-        case .remind:
-            remindSection
-        case .auto:
-            autoSection
-        case .color:
-            paletteSection
+    private var activeContentView: some View {
+        switch activeMode {
+        case .data:
+            DashboardView(theme: theme, states: store.states, records: store.records)
+        case .settings:
+            activeSettingsSectionView
+        }
+    }
+
+    @ViewBuilder
+    private var activeSettingsSectionView: some View {
+        switch activeSection {
         case .add:
             tagSection
+        case .auto:
+            autoSection
+        case .remind:
+            remindSection
+        case .color:
+            paletteSection
         }
     }
 
@@ -424,12 +529,7 @@ struct SettingsView: View {
                 }
                 .padding(.top, -2)
                 .padding(.bottom, 2)
-                .transition(
-                    .asymmetric(
-                        insertion: .opacity.combined(with: .move(edge: .top)),
-                        removal: .opacity
-                    )
-                )
+                .transition(.settingsMacTabZoom)
         }
     }
 
@@ -1118,6 +1218,44 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
+}
+
+private struct SettingsPageTabButtonStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.96
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : 1)
+            .animation(.spring(response: 0.16, dampingFraction: 0.78), value: configuration.isPressed)
+    }
+}
+
+private struct SettingsPageZoomModifier: ViewModifier {
+    let opacity: Double
+    let scale: CGFloat
+    let yOffset: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(opacity)
+            .scaleEffect(scale, anchor: .top)
+            .offset(y: yOffset)
+    }
+}
+
+private extension AnyTransition {
+    static var settingsMacTabZoom: AnyTransition {
+        .asymmetric(
+            insertion: .modifier(
+                active: SettingsPageZoomModifier(opacity: 0, scale: 0.975, yOffset: 7),
+                identity: SettingsPageZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            ),
+            removal: .modifier(
+                active: SettingsPageZoomModifier(opacity: 0, scale: 0.985, yOffset: 4),
+                identity: SettingsPageZoomModifier(opacity: 1, scale: 1, yOffset: 0)
+            )
+        )
+    }
 }
 
 private struct AutoFeedbackPreviewCard: View {

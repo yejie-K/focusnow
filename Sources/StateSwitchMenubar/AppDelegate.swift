@@ -6,6 +6,7 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate, @preconcurrency UNUserNotificationCenterDelegate {
     let store = RecordStore()
+    private let beaconState = BeaconInteractionState()
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var beaconWindows: [NSPanel] = []
@@ -423,7 +424,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             return
         }
 
-        store.beaconProximity = proximity(for: location)
+        beaconState.setProximity(proximity(for: location))
         if isDraggingBeacon {
             return
         }
@@ -499,7 +500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     private func makeBeaconHostingView(for panel: NSPanel) -> NSView {
         let hostingView = DraggableBeaconHostingView(
-            rootView: FloatingBeaconView()
+            rootView: FloatingBeaconView(beaconState: beaconState)
                 .environmentObject(store)
         )
 
@@ -523,7 +524,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         dismissTask = nil
         isDraggingBeacon = true
         lastTriggerDate = Date()
-        store.beaconProximity = 1
+        beaconState.setProximity(1)
         popover?.performClose(nil)
     }
 
@@ -539,7 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         defer {
             isDraggingBeacon = false
             lastTriggerDate = Date()
-            store.beaconProximity = proximity(for: NSEvent.mouseLocation)
+            beaconState.setProximity(proximity(for: NSEvent.mouseLocation))
         }
 
         guard let panel, let screen = screen(for: panel) else {
