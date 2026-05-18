@@ -7,6 +7,7 @@ struct DashboardView: View {
     let records: [RecordEvent]
 
     @State private var snapshot: DashboardSnapshot?
+    @State private var timelineWeekOffset = 0
 
     var body: some View {
         Group {
@@ -23,6 +24,9 @@ struct DashboardView: View {
             refreshSnapshot()
         }
         .onChange(of: states) { _ in
+            refreshSnapshot()
+        }
+        .onChange(of: timelineWeekOffset) { _ in
             refreshSnapshot()
         }
         .onReceive(Timer.publish(every: 60, on: .main, in: .common).autoconnect()) { date in
@@ -59,7 +63,8 @@ struct DashboardView: View {
         snapshot = DashboardSnapshot.make(
             records: records,
             states: states,
-            now: now
+            now: now,
+            timelineWeekOffset: timelineWeekOffset
         )
     }
 
@@ -152,24 +157,16 @@ struct DashboardView: View {
 
     private func timelineSection(_ snapshot: DashboardSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("时间河流", trailing: snapshot.coverageLabel)
+            timelineSectionHeader(snapshot)
 
-            if snapshot.segments.isEmpty {
-                emptyState("今天还没有状态记录")
+            if snapshot.timelineSegmentCount == 0 {
+                emptyState("这一周还没有状态记录")
             } else {
-                DashboardTimelineBar(segments: snapshot.segments, totalDuration: snapshot.totalDuration, theme: theme)
-                    .frame(height: 42)
-
-                HStack(spacing: 8) {
-                    Text(snapshot.timelineStartLabel)
-                    Spacer(minLength: 0)
-                    Text(snapshot.timelineEndLabel)
-                }
-                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                .foregroundStyle(theme.textDim)
+                DashboardWeeklyTimelineGrid(days: snapshot.timelineDays, theme: theme)
+                    .frame(height: 204)
 
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 7)], spacing: 7) {
-                    ForEach(snapshot.topStateShares.prefix(4)) { share in
+                    ForEach(snapshot.topTimelineStateShares.prefix(4)) { share in
                         DashboardLegendPill(share: share, theme: theme)
                     }
                 }
@@ -177,6 +174,57 @@ struct DashboardView: View {
         }
         .padding(12)
         .background(cardBackground(cornerRadius: 18))
+    }
+
+    private func timelineSectionHeader(_ snapshot: DashboardSnapshot) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text("时间河流")
+                .font(.system(size: 13.5, weight: .heavy))
+                .foregroundStyle(theme.ink)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 6) {
+                weekNavigationButton(systemName: "chevron.left", help: "上一周") {
+                    timelineWeekOffset -= 1
+                }
+
+                Text(snapshot.weekRangeLabel)
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(theme.textDim)
+                    .lineLimit(1)
+                    .frame(minWidth: 108)
+
+                weekNavigationButton(systemName: "chevron.right", help: "下一周", isEnabled: timelineWeekOffset < 0) {
+                    timelineWeekOffset = min(timelineWeekOffset + 1, 0)
+                }
+            }
+        }
+    }
+
+    private func weekNavigationButton(
+        systemName: String,
+        help: String,
+        isEnabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 10.5, weight: .heavy))
+                .foregroundStyle(isEnabled ? theme.textMuted : theme.textDim.opacity(0.45))
+                .frame(width: 23, height: 23)
+                .background(
+                    Circle()
+                        .fill(theme.surfaceAlt.opacity(isEnabled ? 0.92 : 0.46))
+                        .overlay(
+                            Circle()
+                                .stroke(theme.border.opacity(isEnabled ? 0.78 : 0.38), lineWidth: 1)
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .help(help)
     }
 
     private func distributionSection(_ snapshot: DashboardSnapshot) -> some View {
@@ -303,45 +351,128 @@ private struct DashboardMetricCard: View {
     }
 }
 
-private struct DashboardTimelineBar: View {
-    let segments: [DashboardSegment]
-    let totalDuration: TimeInterval
+private struct DashboardWeeklyTimelineGrid: View {
+    let days: [DashboardTimelineDay]
     let theme: AppTheme
+
+    private let axisWidth: CGFloat = 20
+    private let daySpacing: CGFloat = 3
+    private let dayLabelHeight: CGFloat = 15
+    private let hourMarks = [8, 12, 16, 20]
+    private let focusStartMinute = 8.0 * 60.0
+    private let focusEndMinute = 20.0 * 60.0
+    private let focusTopShare = 0.14
+    private let focusBottomShare = 0.86
 
     var body: some View {
         GeometryReader { proxy in
-            HStack(spacing: 2) {
-                ForEach(segments) { segment in
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color(hex: segment.colorHex))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [Color.white.opacity(0.26), Color.white.opacity(0.02)],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                        )
-                        .frame(width: width(for: segment, totalWidth: proxy.size.width))
-                        .help("\(segment.displayName) · \(DashboardFormat.duration(segment.duration))")
+            let chartHeight = max(1, proxy.size.height - dayLabelHeight)
+
+            ZStack(alignment: .topLeading) {
+                ForEach(hourMarks, id: \.self) { hour in
+                    HStack(spacing: 4) {
+                        Text(hourLabel(hour))
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(theme.textDim)
+                            .frame(width: axisWidth, alignment: .trailing)
+
+                        Rectangle()
+                            .fill(theme.border.opacity(hour == 12 || hour == 16 ? 0.58 : 0.46))
+                            .frame(height: 1)
+                    }
+                    .offset(y: dayLabelHeight + yPosition(forMinute: Double(hour * 60), in: chartHeight) - 5)
+                }
+
+                HStack(alignment: .top, spacing: daySpacing) {
+                    Color.clear
+                        .frame(width: axisWidth)
+
+                    ForEach(days) { day in
+                        dayColumn(day, height: chartHeight)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .offset(y: dayLabelHeight)
+
+                HStack(alignment: .top, spacing: daySpacing) {
+                    Color.clear
+                        .frame(width: axisWidth)
+
+                    ForEach(days) { day in
+                        dayHeader(day)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
-            .padding(3)
-            .background(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(theme.surfaceAlt.opacity(0.76))
-            )
         }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(theme.surfaceAlt.opacity(0.72))
+        )
     }
 
-    private func width(for segment: DashboardSegment, totalWidth: CGFloat) -> CGFloat {
-        guard totalDuration > 0 else {
-            return 0
+    private func dayHeader(_ day: DashboardTimelineDay) -> some View {
+        Text(day.weekdayLabel)
+            .font(.system(size: 9, weight: .heavy))
+            .foregroundStyle(day.isToday ? theme.accentPrimary : theme.textMuted)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .frame(height: dayLabelHeight, alignment: .top)
+            .help(day.dayLabel)
+    }
+
+    private func dayColumn(_ day: DashboardTimelineDay, height: CGFloat) -> some View {
+        ZStack(alignment: .top) {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(theme.surface.opacity(day.isToday ? 0.92 : 0.64))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(day.isToday ? theme.accentPrimary.opacity(0.34) : theme.border.opacity(0.64), lineWidth: 1)
+                )
+
+            ForEach(day.segments) { segment in
+                let segmentHeight = max(3, yPosition(forMinute: segment.endMinute, in: height) - yPosition(forMinute: segment.startMinute, in: height))
+                RoundedRectangle(cornerRadius: min(5, segmentHeight / 2), style: .continuous)
+                    .fill(Color(hex: segment.colorHex))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: min(5, segmentHeight / 2), style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0.26), Color.white.opacity(0.03)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
+                    .frame(height: segmentHeight)
+                    .padding(.horizontal, 2)
+                    .offset(y: yPosition(forMinute: segment.startMinute, in: height))
+                    .help("\(day.weekdayLabel) \(segment.displayName) · \(segment.timeRangeLabel) · \(DashboardFormat.duration(segment.duration))")
+            }
         }
-        let available = max(0, totalWidth - CGFloat(max(segments.count - 1, 0) * 2) - 6)
-        return max(3, available * CGFloat(segment.duration / totalDuration))
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func hourLabel(_ hour: Int) -> String {
+        String(format: "%02d", hour)
+    }
+
+    private func yPosition(forMinute minute: Double, in height: CGFloat) -> CGFloat {
+        let clamped = min(max(minute, 0), 1440)
+        let normalized: Double
+        if clamped < focusStartMinute {
+            normalized = (clamped / focusStartMinute) * focusTopShare
+        } else if clamped <= focusEndMinute {
+            let focusProgress = (clamped - focusStartMinute) / (focusEndMinute - focusStartMinute)
+            normalized = focusTopShare + focusProgress * (focusBottomShare - focusTopShare)
+        } else {
+            let lateProgress = (clamped - focusEndMinute) / (1440 - focusEndMinute)
+            normalized = focusBottomShare + lateProgress * (1 - focusBottomShare)
+        }
+        return height * CGFloat(normalized)
     }
 }
 
@@ -505,6 +636,8 @@ private struct DashboardAppRankRow: View {
 
 struct DashboardSnapshot {
     let segments: [DashboardSegment]
+    let timelineDays: [DashboardTimelineDay]
+    let timelineStateShares: [DashboardStateShare]
     let stateShares: [DashboardStateShare]
     let appShares: [DashboardAppShare]
     let transitionCount: Int
@@ -512,6 +645,7 @@ struct DashboardSnapshot {
     let filteredGapCount: Int
     let filteredGapDuration: TimeInterval
     let dayLabel: String
+    let weekRangeLabel: String
     let timelineStartLabel: String
     let timelineEndLabel: String
 
@@ -525,6 +659,19 @@ struct DashboardSnapshot {
             }
             return $0.label < $1.label
         }
+    }
+
+    var topTimelineStateShares: [DashboardStateShare] {
+        timelineStateShares.sorted {
+            if $0.duration != $1.duration {
+                return $0.duration > $1.duration
+            }
+            return $0.label < $1.label
+        }
+    }
+
+    var timelineSegmentCount: Int {
+        timelineDays.reduce(0) { $0 + $1.segments.count }
     }
 
     var totalTrackedLabel: String {
@@ -602,7 +749,12 @@ struct DashboardSnapshot {
         return Int(min(max(raw, 0), 100).rounded())
     }
 
-    static func make(records: [RecordEvent], states: [StateDefinition], now: Date) -> DashboardSnapshot {
+    static func make(
+        records: [RecordEvent],
+        states: [StateDefinition],
+        now: Date,
+        timelineWeekOffset: Int = 0
+    ) -> DashboardSnapshot {
         let calendar = Calendar.current
         let dayStart = calendar.startOfDay(for: now)
         let dayFormatter = DashboardFormat.dayFormatter
@@ -616,14 +768,133 @@ struct DashboardSnapshot {
         .sorted { $0.date < $1.date }
 
         let stateByCode = Dictionary(uniqueKeysWithValues: states.map { ($0.code, $0) })
+        let todayBuild = makeDayBuild(
+            parsedRecords: parsedRecords,
+            dayStart: dayStart,
+            dayEnd: now,
+            stateByCode: stateByCode,
+            calendar: calendar
+        )
+        let timelineBuild = makeWeekTimeline(
+            parsedRecords: parsedRecords,
+            states: states,
+            stateByCode: stateByCode,
+            now: now,
+            weekOffset: timelineWeekOffset,
+            calendar: calendar
+        )
+        let segments = todayBuild.segments
+
+        let totalDuration = segments.reduce(0) { $0 + $1.duration }
+        let stateShares = makeStateShares(segments: segments, states: states, totalDuration: totalDuration)
+        let appShares = makeAppShares(segments: segments)
+        let startLabel = segments.first.map { DashboardFormat.time($0.start) } ?? "--:--"
+        let endLabel = DashboardFormat.time(now)
+
+        return DashboardSnapshot(
+            segments: segments,
+            timelineDays: timelineBuild.days,
+            timelineStateShares: timelineBuild.stateShares,
+            stateShares: stateShares,
+            appShares: appShares,
+            transitionCount: todayBuild.transitionCount,
+            totalDuration: totalDuration,
+            filteredGapCount: todayBuild.filteredGapCount,
+            filteredGapDuration: todayBuild.filteredGapDuration,
+            dayLabel: dayLabel,
+            weekRangeLabel: DashboardFormat.weekRange(start: timelineBuild.start, end: timelineBuild.end, offset: timelineWeekOffset),
+            timelineStartLabel: startLabel,
+            timelineEndLabel: endLabel
+        )
+    }
+
+    private static func makeWeekTimeline(
+        parsedRecords: [ParsedDashboardRecord],
+        states: [StateDefinition],
+        stateByCode: [String: StateDefinition],
+        now: Date,
+        weekOffset: Int,
+        calendar: Calendar
+    ) -> DashboardWeekTimelineBuild {
+        var weekCalendar = calendar
+        weekCalendar.firstWeekday = 2
+        weekCalendar.minimumDaysInFirstWeek = 1
+
+        let anchorDate = weekCalendar.date(byAdding: .weekOfYear, value: weekOffset, to: now) ?? now
+        let weekInterval = weekCalendar.dateInterval(of: .weekOfYear, for: anchorDate)
+        let weekStart = weekInterval?.start ?? weekCalendar.startOfDay(for: anchorDate)
+        let weekEnd = weekCalendar.date(byAdding: .day, value: 6, to: weekStart) ?? weekStart
+
+        var allSegments: [DashboardSegment] = []
+        let days: [DashboardTimelineDay] = (0..<7).compactMap { offset in
+            guard let dayStart = weekCalendar.date(byAdding: .day, value: offset, to: weekStart),
+                  let rawDayEnd = weekCalendar.date(byAdding: .day, value: 1, to: dayStart) else {
+                return nil
+            }
+
+            let dayEnd = rawDayEnd < now ? rawDayEnd : now
+            let build: DashboardDayBuild
+            if dayStart < now {
+                build = makeDayBuild(
+                    parsedRecords: parsedRecords,
+                    dayStart: dayStart,
+                    dayEnd: dayEnd,
+                    stateByCode: stateByCode,
+                    calendar: weekCalendar
+                )
+            } else {
+                build = .empty
+            }
+            allSegments.append(contentsOf: build.segments)
+
+            return DashboardTimelineDay(
+                id: DashboardFormat.dayIdentifier(dayStart),
+                weekdayLabel: DashboardFormat.weekday(dayStart),
+                dayLabel: DashboardFormat.dayNumber(dayStart),
+                isToday: weekCalendar.isDate(dayStart, inSameDayAs: now),
+                segments: build.segments.map { segment in
+                    DashboardTimelineSegment(
+                        id: segment.id,
+                        stateCode: segment.stateCode,
+                        label: segment.label,
+                        colorHex: segment.colorHex,
+                        startMinute: minuteOffset(segment.start, from: dayStart),
+                        endMinute: minuteOffset(segment.end, from: dayStart),
+                        duration: segment.duration,
+                        appName: segment.appName
+                    )
+                }
+            )
+        }
+
+        let totalDuration = allSegments.reduce(0) { $0 + $1.duration }
+        return DashboardWeekTimelineBuild(
+            days: days,
+            stateShares: makeStateShares(segments: allSegments, states: states, totalDuration: totalDuration),
+            start: weekStart,
+            end: weekEnd
+        )
+    }
+
+    private static func makeDayBuild(
+        parsedRecords: [ParsedDashboardRecord],
+        dayStart: Date,
+        dayEnd: Date,
+        stateByCode: [String: StateDefinition],
+        calendar: Calendar
+    ) -> DashboardDayBuild {
+        guard dayEnd > dayStart else {
+            return .empty
+        }
+
         let carryFromPreviousDay = parsedRecords.last { $0.date < dayStart }
-        let events = parsedRecords.filter { $0.date >= dayStart }
+        let events = parsedRecords.filter { $0.date >= dayStart && $0.date <= dayEnd }
 
         var segments: [DashboardSegment] = []
         var filteredGapCount = 0
         var filteredGapDuration: TimeInterval = 0
         if carryFromPreviousDay != nil {
-            let crossDayEnd = min(events.first?.date ?? now, now)
+            let crossDayEnd = min(events.first?.date ?? dayEnd, dayEnd)
             if crossDayEnd > dayStart {
                 filteredGapCount += 1
                 filteredGapDuration += crossDayEnd.timeIntervalSince(dayStart)
@@ -632,9 +903,9 @@ struct DashboardSnapshot {
 
         for index in events.indices {
             let event = events[index]
-            let nextDate = index + 1 < events.count ? events[index + 1].date : now
+            let nextDate = index + 1 < events.count ? events[index + 1].date : dayEnd
             let start = max(event.date, dayStart)
-            let rawEnd = min(nextDate, now)
+            let rawEnd = min(nextDate, dayEnd)
             let limit = segmentEndLimit(
                 start: start,
                 rawEnd: rawEnd,
@@ -656,7 +927,7 @@ struct DashboardSnapshot {
             let duration = end.timeIntervalSince(start)
             segments.append(
                 DashboardSegment(
-                    id: "\(event.record.id)-\(index)",
+                    id: "\(event.record.id)-\(DashboardFormat.dayIdentifier(dayStart))-\(index)",
                     stateCode: event.record.stateCode,
                     label: label,
                     colorHex: colorHex,
@@ -673,25 +944,16 @@ struct DashboardSnapshot {
             }
         }
 
-        let totalDuration = segments.reduce(0) { $0 + $1.duration }
-        let todayTransitionCount = parsedRecords.filter { $0.date >= dayStart }.count
-        let stateShares = makeStateShares(segments: segments, states: states, totalDuration: totalDuration)
-        let appShares = makeAppShares(segments: segments)
-        let startLabel = segments.first.map { DashboardFormat.time($0.start) } ?? "--:--"
-        let endLabel = DashboardFormat.time(now)
-
-        return DashboardSnapshot(
+        return DashboardDayBuild(
             segments: segments,
-            stateShares: stateShares,
-            appShares: appShares,
-            transitionCount: todayTransitionCount,
-            totalDuration: totalDuration,
             filteredGapCount: filteredGapCount,
             filteredGapDuration: filteredGapDuration,
-            dayLabel: dayLabel,
-            timelineStartLabel: startLabel,
-            timelineEndLabel: endLabel
+            transitionCount: events.count
         )
+    }
+
+    private static func minuteOffset(_ date: Date, from dayStart: Date) -> Double {
+        min(max(date.timeIntervalSince(dayStart) / 60, 0), 1440)
     }
 
     private static func segmentEndLimit(
@@ -790,6 +1052,27 @@ struct ParsedDashboardRecord {
     let date: Date
 }
 
+private struct DashboardDayBuild {
+    let segments: [DashboardSegment]
+    let filteredGapCount: Int
+    let filteredGapDuration: TimeInterval
+    let transitionCount: Int
+
+    static let empty = DashboardDayBuild(
+        segments: [],
+        filteredGapCount: 0,
+        filteredGapDuration: 0,
+        transitionCount: 0
+    )
+}
+
+private struct DashboardWeekTimelineBuild {
+    let days: [DashboardTimelineDay]
+    let stateShares: [DashboardStateShare]
+    let start: Date
+    let end: Date
+}
+
 struct DashboardSegment: Identifiable {
     let id: String
     let stateCode: String
@@ -805,6 +1088,36 @@ struct DashboardSegment: Identifiable {
             return label
         }
         return "\(label) - \(appName)"
+    }
+}
+
+struct DashboardTimelineDay: Identifiable {
+    let id: String
+    let weekdayLabel: String
+    let dayLabel: String
+    let isToday: Bool
+    let segments: [DashboardTimelineSegment]
+}
+
+struct DashboardTimelineSegment: Identifiable {
+    let id: String
+    let stateCode: String
+    let label: String
+    let colorHex: String
+    let startMinute: Double
+    let endMinute: Double
+    let duration: TimeInterval
+    let appName: String?
+
+    var displayName: String {
+        guard let appName, !appName.isEmpty else {
+            return label
+        }
+        return "\(label) - \(appName)"
+    }
+
+    var timeRangeLabel: String {
+        "\(DashboardFormat.minute(startMinute))-\(DashboardFormat.minute(endMinute))"
     }
 }
 
@@ -849,6 +1162,28 @@ private enum DashboardFormat {
         return formatter
     }()
 
+    private static let weekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE"
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    private static let dayNumberFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM.dd"
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    private static let dayIdentifierFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = .current
+        return formatter
+    }()
+
     private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
@@ -870,6 +1205,39 @@ private enum DashboardFormat {
 
     static func time(_ date: Date) -> String {
         timeFormatter.string(from: date)
+    }
+
+    static func weekday(_ date: Date) -> String {
+        weekdayFormatter.string(from: date)
+    }
+
+    static func dayNumber(_ date: Date) -> String {
+        dayNumberFormatter.string(from: date)
+    }
+
+    static func dayIdentifier(_ date: Date) -> String {
+        dayIdentifierFormatter.string(from: date)
+    }
+
+    static func weekRange(start: Date, end: Date, offset: Int) -> String {
+        let prefix: String
+        if offset == 0 {
+            prefix = "本周"
+        } else if offset == -1 {
+            prefix = "上周"
+        } else if offset < 0 {
+            prefix = "\(abs(offset))周前"
+        } else {
+            prefix = "\(offset)周后"
+        }
+        return "\(prefix) \(dayNumber(start))-\(dayNumber(end))"
+    }
+
+    static func minute(_ minute: Double) -> String {
+        let clamped = min(max(Int(minute.rounded()), 0), 1440)
+        let hour = clamped / 60
+        let minutePart = clamped % 60
+        return String(format: "%02d:%02d", hour, minutePart)
     }
 
     static func duration(_ interval: TimeInterval) -> String {

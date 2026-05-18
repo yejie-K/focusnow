@@ -592,6 +592,108 @@ final class RecordStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.appShares[1].duration, 30 * 60, accuracy: 0.1)
     }
 
+    func testDashboardWeeklyTimelineArrangesSegmentsByWeekdayAndMinute() throws {
+        let states = dashboardTestStates()
+        let now = try makeDate(year: 2026, month: 5, day: 13, hour: 10, minute: 0)
+        let records = [
+            dashboardRecord(
+                id: "monday_focus",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 11, hour: 9, minute: 0),
+                appName: "Codex"
+            ),
+            dashboardRecord(
+                id: "monday_message",
+                state: states[1],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 11, hour: 10, minute: 0),
+                appName: "飞书"
+            ),
+            dashboardRecord(
+                id: "tuesday_rest",
+                state: states[2],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 12, hour: 14, minute: 0)
+            ),
+            dashboardRecord(
+                id: "wednesday_focus",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 13, hour: 8, minute: 0),
+                appName: "Codex"
+            ),
+        ]
+
+        let snapshot = DashboardSnapshot.make(records: records, states: states, now: now)
+
+        XCTAssertEqual(snapshot.timelineDays.count, 7)
+        XCTAssertEqual(snapshot.weekRangeLabel, "本周 05.11-05.17")
+        XCTAssertEqual(snapshot.timelineSegmentCount, 4)
+
+        let monday = snapshot.timelineDays[0]
+        XCTAssertEqual(monday.weekdayLabel, "周一")
+        XCTAssertEqual(monday.dayLabel, "05.11")
+        XCTAssertEqual(monday.segments.count, 2)
+        XCTAssertEqual(monday.segments[0].startMinute, 9 * 60, accuracy: 0.1)
+        XCTAssertEqual(monday.segments[0].endMinute, 10 * 60, accuracy: 0.1)
+        XCTAssertEqual(monday.segments[1].startMinute, 10 * 60, accuracy: 0.1)
+        XCTAssertEqual(monday.segments[1].endMinute, 13 * 60, accuracy: 0.1)
+
+        let tuesday = snapshot.timelineDays[1]
+        XCTAssertEqual(tuesday.weekdayLabel, "周二")
+        XCTAssertEqual(try XCTUnwrap(tuesday.segments.first?.startMinute), 14 * 60, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(tuesday.segments.first?.endMinute), 17 * 60, accuracy: 0.1)
+
+        let wednesday = snapshot.timelineDays[2]
+        XCTAssertTrue(wednesday.isToday)
+        XCTAssertEqual(try XCTUnwrap(wednesday.segments.first?.startMinute), 8 * 60, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(wednesday.segments.first?.endMinute), 10 * 60, accuracy: 0.1)
+        XCTAssertTrue(snapshot.timelineDays[3].segments.isEmpty)
+
+        XCTAssertEqual(snapshot.segments.count, 1)
+        XCTAssertEqual(snapshot.totalDuration, 2 * 60 * 60, accuracy: 0.1)
+        XCTAssertEqual(
+            try XCTUnwrap(snapshot.timelineStateShares.first { $0.id == "focus_work" }?.duration),
+            3 * 60 * 60,
+            accuracy: 0.1
+        )
+    }
+
+    func testDashboardWeeklyTimelineCanShowPreviousWeek() throws {
+        let states = dashboardTestStates()
+        let now = try makeDate(year: 2026, month: 5, day: 13, hour: 10, minute: 0)
+        let records = [
+            dashboardRecord(
+                id: "previous_week_focus",
+                state: states[0],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 5, hour: 9, minute: 15),
+                appName: "Codex"
+            ),
+            dashboardRecord(
+                id: "today_message",
+                state: states[1],
+                recordedAt: try makeDate(year: 2026, month: 5, day: 13, hour: 8, minute: 0),
+                appName: "飞书"
+            ),
+        ]
+
+        let snapshot = DashboardSnapshot.make(
+            records: records,
+            states: states,
+            now: now,
+            timelineWeekOffset: -1
+        )
+
+        XCTAssertEqual(snapshot.weekRangeLabel, "上周 05.04-05.10")
+        XCTAssertEqual(snapshot.timelineDays.count, 7)
+        XCTAssertEqual(snapshot.timelineDays[1].weekdayLabel, "周二")
+        XCTAssertEqual(snapshot.timelineDays[1].dayLabel, "05.05")
+        XCTAssertEqual(snapshot.timelineDays[1].segments.count, 1)
+        XCTAssertEqual(try XCTUnwrap(snapshot.timelineDays[1].segments.first?.startMinute), 9 * 60 + 15, accuracy: 0.1)
+        XCTAssertEqual(try XCTUnwrap(snapshot.timelineDays[1].segments.first?.endMinute), 12 * 60 + 15, accuracy: 0.1)
+        XCTAssertFalse(snapshot.timelineDays.contains { $0.isToday })
+
+        XCTAssertEqual(snapshot.segments.count, 1)
+        XCTAssertEqual(snapshot.segments.first?.stateCode, "message")
+    }
+
     @MainActor
     private func seedRecord(stateCode: String, currentState: String, recordedAt: Date) throws {
         _ = RecordStore(baseDirectoryURL: temporaryDirectoryURL, enableReminderLoop: false)

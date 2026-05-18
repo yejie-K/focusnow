@@ -9,8 +9,8 @@ plist="$app_path/Contents/Info.plist"
 resources_dir="$app_path/Contents/Resources"
 icon_icns="$repo_root/assets/AppIcon.icns"
 bundle_id="local.stateswitch.menubar"
-version="2.3.0"
-build_number="2300"
+version="2.4.0"
+build_number="2400"
 
 clear_codesign_detritus() {
   xattr -cr "$app_path" >/dev/null 2>&1 || true
